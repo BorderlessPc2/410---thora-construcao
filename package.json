@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "react-dropzone": "^14.3.8",
+    "react-router-dom": "^7.12.0"
+  }
+}
