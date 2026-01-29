@@ -26,7 +26,8 @@ FRONTEND_URLS = [
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
-    os.getenv("FRONTEND_URL", ""),  # Production frontend URL
+    "https://410-thora.netlify.app",  # Frontend Netlify
+    os.getenv("FRONTEND_URL", ""),  # Production frontend URL via env var
 ]
 # Remove empty strings
 FRONTEND_URLS = [url for url in FRONTEND_URLS if url]
