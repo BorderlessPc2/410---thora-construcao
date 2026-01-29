@@ -10,6 +10,7 @@ from typing import List, Dict, Any
 import logging
 import json
 from pathlib import Path
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +25,25 @@ try:
 except ValueError:
     # Firebase not initialized, try to initialize
     try:
-        creds_path = Path(__file__).parent / "firebase_credentials.json"
-        if creds_path.exists():
-            creds = credentials.Certificate(str(creds_path))
+        # Try to load from environment variable first (Render)
+        firebase_creds_env = os.getenv("FIREBASE_CREDENTIALS")
+        if firebase_creds_env:
+            creds_dict = json.loads(firebase_creds_env)
+            creds = credentials.Certificate(creds_dict)
             firebase_admin.initialize_app(creds)
             db = firestore.client()
-            logger.info("✅ Firebase initialized com credentials file")
+            logger.info("✅ Firebase initialized com environment variable")
         else:
-            logger.error("❌ firebase_credentials.json não encontrado!")
-            raise FileNotFoundError("firebase_credentials.json não encontrado")
+            # Fallback to local file
+            creds_path = Path(__file__).parent / "firebase_credentials.json"
+            if creds_path.exists():
+                creds = credentials.Certificate(str(creds_path))
+                firebase_admin.initialize_app(creds)
+                db = firestore.client()
+                logger.info("✅ Firebase initialized com credentials file")
+            else:
+                logger.error("❌ firebase_credentials.json não encontrado e FIREBASE_CREDENTIALS não definido!")
+                raise FileNotFoundError("firebase_credentials.json não encontrado")
     except Exception as e:
         logger.error(f"❌ Firebase initialization failed: {e}")
         db = None
