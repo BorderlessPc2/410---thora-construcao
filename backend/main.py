@@ -21,8 +21,8 @@ from config import (
     MAX_FILE_SIZE,
     TEMP_FOLDER,
     BASE_DIR,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
 )
 from firebase_service import OrcamentoFirestore
 
@@ -40,6 +40,9 @@ except ImportError:
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Cache em memória para modo offline (dados temporários)
+_OFFLINE_CACHE = {}
 
 # FastAPI app
 app = FastAPI(
@@ -100,10 +103,10 @@ class AIStandardizeRequest(BaseModel):
 
 @app.post("/api/ai/standardize")
 async def ai_standardize_items(payload: AIStandardizeRequest):
-    if not OPENAI_API_KEY:
+    if not GEMINI_API_KEY:
         raise HTTPException(
-            status_code=500,
-            detail="OPENAI_API_KEY não configurada",
+            status_code=503,
+            detail="Recurso de IA indisponível: chave do Gemini não configurada",
         )
 
     system_message = (
@@ -132,30 +135,42 @@ async def ai_standardize_items(payload: AIStandardizeRequest):
     }
 
     try:
+        # Usar API REST do Gemini
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        
+        request_body = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": system_message},
+                        {"text": json.dumps(user_message)}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "topK": 40,
+                "topP": 0.95,
+            }
+        }
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": OPENAI_MODEL,
-                    "temperature": 0.1,
-                    "messages": [
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": json.dumps(user_message)},
-                    ],
-                },
-            )
-
+            response = await client.post(url, json=request_body)
+        
         if response.status_code >= 400:
+            logger.error(f"Erro Gemini: {response.text}")
             raise HTTPException(
                 status_code=502,
-                detail=f"Erro na OpenAI: {response.text}",
+                detail=f"Erro na API do Gemini: {response.text}",
             )
-
-        content = response.json()["choices"][0]["message"]["content"].strip()
+        
+        response_data = response.json()
+        if "candidates" not in response_data or not response_data["candidates"]:
+            raise ValueError("Resposta vazia do Gemini")
+        
+        content = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        # Extrair JSON da resposta
         if content.startswith("```"):
             content = content.strip("`")
             if content.startswith("json"):
@@ -309,6 +324,18 @@ async def extract_pdf(upload_id: str):
             # Continuar mesmo se Firestore falhar, dados extraídos ainda serão retornados
             doc_id = None
         
+        # Salvar em cache para modo offline
+        _OFFLINE_CACHE[upload_id] = {
+            "uploadId": upload_id,
+            "filename": filename,
+            "tables": tables,
+            "uploadedAt": datetime.now().isoformat(),
+            "extractedAt": datetime.now().isoformat(),
+            "tablesFound": len(tables),
+            "status": "completed"
+        }
+        logger.info(f"✅ Dados salvos em cache offline: {upload_id}")
+        
         # Deletar arquivo PDF
         try:
             file_path.unlink()
@@ -397,6 +424,150 @@ async def get_orcamento(upload_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao recuperar orçamento: {str(e)}",
+        )
+
+# ============== CURVA ABC ==============
+@app.get("/api/curva-abc/{upload_id}")
+async def get_curva_abc(upload_id: str):
+    """
+    Calcula Curva ABC (análise de Pareto) para itens do orçamento
+    
+    Args:
+        upload_id: Upload ID do orçamento
+    
+    Returns:
+        {
+            "status": "success",
+            "items": [...],
+            "summary": {...}
+        }
+    """
+    try:
+        # Buscar orçamento
+        orcamento = OrcamentoFirestore.get_orcamento_by_upload_id(upload_id)
+        
+        # Se não encontrou no Firestore, tentar buscar do cache offline
+        if not orcamento:
+            orcamento = _OFFLINE_CACHE.get(upload_id)
+        
+        if not orcamento:
+            raise HTTPException(
+                status_code=404,
+                detail=f"❌ Orçamento não encontrado: {upload_id}",
+            )
+        
+        # Extrair itens das tabelas
+        tables = orcamento.get("tables", [])
+        items = []
+        
+        for table in tables:
+            rows = table.get("rows", [])
+            
+            # Pular primeira linha (cabeçalho)
+            for row in rows[1:]:
+                if len(row) < 4:
+                    continue
+                
+                try:
+                    # Tentar extrair: descrição, quantidade, unidade, valor unitário
+                    descricao = str(row[0] or "").strip()
+                    quantidade_str = str(row[1] or "").strip()
+                    unidade = str(row[2] or "").strip()
+                    valor_str = str(row[3] or "").strip()
+                    
+                    if not descricao or descricao.lower() in ["total", "subtotal", ""]:
+                        continue
+                    
+                    # Limpar e converter valores numéricos
+                    quantidade = float(quantidade_str.replace(",", "."))
+                    valor_unitario = float(valor_str.replace("R$", "").replace(",", ".").strip())
+                    valor_total = quantidade * valor_unitario
+                    
+                    items.append({
+                        "id": f"item_{len(items) + 1}",
+                        "descricao": descricao,
+                        "quantidade": quantidade,
+                        "unidade": unidade,
+                        "valor_unitario": valor_unitario,
+                        "valor_total": valor_total,
+                        "status": "validado"
+                    })
+                except (ValueError, IndexError, TypeError):
+                    continue
+        
+        if not items:
+            return {
+                "status": "success",
+                "items": [],
+                "summary": {
+                    "total": 0,
+                    "countA": 0,
+                    "countB": 0,
+                    "countC": 0,
+                    "valueA": 0,
+                    "valueB": 0,
+                    "valueC": 0,
+                    "percentA": 0,
+                    "percentB": 0,
+                    "percentC": 0
+                }
+            }
+        
+        # Ordenar por valor total decrescente
+        items.sort(key=lambda x: x["valor_total"], reverse=True)
+        
+        # Calcular total e percentuais acumulados
+        total_value = sum(item["valor_total"] for item in items)
+        accumulated = 0
+        
+        for item in items:
+            accumulated += item["valor_total"]
+            accumulated_percentage = (accumulated / total_value * 100) if total_value > 0 else 0
+            item["accumulated_percentage"] = round(accumulated_percentage, 1)
+            
+            # Classificar segundo Pareto (80-15-5)
+            if accumulated_percentage <= 80:
+                item["classification"] = "A"
+            elif accumulated_percentage <= 95:
+                item["classification"] = "B"
+            else:
+                item["classification"] = "C"
+        
+        # Calcular resumo
+        countA = sum(1 for item in items if item["classification"] == "A")
+        countB = sum(1 for item in items if item["classification"] == "B")
+        countC = sum(1 for item in items if item["classification"] == "C")
+        
+        valueA = sum(item["valor_total"] for item in items if item["classification"] == "A")
+        valueB = sum(item["valor_total"] for item in items if item["classification"] == "B")
+        valueC = sum(item["valor_total"] for item in items if item["classification"] == "C")
+        
+        summary = {
+            "total": total_value,
+            "countA": countA,
+            "countB": countB,
+            "countC": countC,
+            "valueA": valueA,
+            "valueB": valueB,
+            "valueC": valueC,
+            "percentA": round((valueA / total_value * 100), 1) if total_value > 0 else 0,
+            "percentB": round((valueB / total_value * 100), 1) if total_value > 0 else 0,
+            "percentC": round((valueC / total_value * 100), 1) if total_value > 0 else 0,
+        }
+        
+        return {
+            "status": "success",
+            "items": items,
+            "summary": summary
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao calcular Curva ABC: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao calcular Curva ABC: {str(e)}",
         )
 
 # ============== EXPORT XLSX ==============

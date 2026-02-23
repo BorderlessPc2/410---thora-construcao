@@ -26,6 +26,7 @@ interface ItemOrcamento {
   unit: string;
   qty: number;
   unitPrice: number;
+  selected?: boolean;
 }
 
 interface TableRow {
@@ -48,6 +49,7 @@ export default function ValidacaoOrcamento() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
+  const [selectAll, setSelectAll] = useState(false);
 
   // States do PDF Viewer
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -276,9 +278,24 @@ export default function ValidacaoOrcamento() {
       unit: "un",
       qty: 0,
       unitPrice: 0,
+      selected: false,
     };
     setItems((prev) => [...prev, newItem]);
   };
+
+  const handleSelectAll = () => {
+    const newSelectAll = !selectAll;
+    setSelectAll(newSelectAll);
+    setItems(items.map(item => ({ ...item, selected: newSelectAll })));
+  };
+
+  const handleSelectItem = (id: number) => {
+    setItems(items.map(item => 
+      item.id === id ? { ...item, selected: !item.selected } : item
+    ));
+  };
+
+  const selectedItemsCount = items.filter(item => item.selected).length;
 
   const formatMoney = (value: number) => {
     return value.toLocaleString("pt-BR", {
@@ -344,24 +361,25 @@ export default function ValidacaoOrcamento() {
             {isExporting ? "Exportando..." : "Exportar"}
           </button>
           <button
-            disabled={isLoading || items.length === 0}
+            disabled={isLoading || selectedItemsCount === 0}
             className="bg-[#0F52BA] hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition shadow-sm cursor-pointer"
             onClick={() => {
-              if (items.length === 0) {
-                alert("⚠️ Adicione pelo menos um item antes de continuar");
+              if (selectedItemsCount === 0) {
+                alert("⚠️ Selecione pelo menos um item para analisar");
                 return;
               }
+              const selectedItems = items.filter(item => item.selected);
               const uploadId = location.state?.uploadId || "unknown";
               navigate(`/curva-abc/${uploadId}`, {
                 state: {
-                  items,
+                  items: selectedItems,
                   uploadId,
                 },
               });
             }}
           >
             <Check className="w-4 h-4 " />
-            Confirmar
+            Analisar ({selectedItemsCount})
           </button>
         </div>
       </header>
@@ -529,6 +547,14 @@ export default function ValidacaoOrcamento() {
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm border-b border-gray-200">
                     <tr>
+                      <th className="px-3 py-3 w-12">
+                        <input
+                          type="checkbox"
+                          checked={selectAll}
+                          onChange={handleSelectAll}
+                          className="w-4 h-4 text-blue-600 rounded cursor-pointer"
+                        />
+                      </th>
                       <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">
                         Código
                       </th>
@@ -554,8 +580,18 @@ export default function ValidacaoOrcamento() {
                     {items.map((item) => (
                       <tr
                         key={item.id}
-                        className="hover:bg-blue-50/30 transition group"
+                        className={`hover:bg-blue-50/30 transition group ${
+                          item.selected ? 'bg-blue-50/40' : ''
+                        }`}
                       >
+                        <td className="px-3 py-3">
+                          <input
+                            type="checkbox"
+                            checked={item.selected || false}
+                            onChange={() => handleSelectItem(item.id)}
+                            className="w-4 h-4 text-blue-600 rounded cursor-pointer"
+                          />
+                        </td>
                         <td className="px-4 py-3">
                           <input
                             type="text"

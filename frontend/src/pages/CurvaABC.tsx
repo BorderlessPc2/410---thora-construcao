@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Download,
   ChevronRight,
+  Loader2,
 } from "lucide-react";
 import {
   BarChart,
@@ -20,7 +21,7 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { standardizeItemsWithAI } from "../services/api";
+import { standardizeItemsWithAI, getCurvaABC } from "../services/api";
 
 interface Item {
   id: string;
@@ -34,118 +35,42 @@ interface Item {
   accumulated_percentage?: number;
 }
 
-// Dados mockados para demonstração
-const MOCK_ITEMS: Item[] = [
-  {
-    id: "item_1",
-    descricao: "Concreto estrutural",
-    quantidade: 150,
-    unidade: "m³",
-    valor_unitario: 450,
-    valor_total: 67500,
-    status: "validado",
-    classification: "A",
-    accumulated_percentage: 38,
-  },
-  {
-    id: "item_2",
-    descricao: "Aço estrutural",
-    quantidade: 45,
-    unidade: "t",
-    valor_unitario: 3500,
-    valor_total: 157500,
-    status: "validado",
-    classification: "A",
-    accumulated_percentage: 77,
-  },
-  {
-    id: "item_3",
-    descricao: "Blocos estruturais",
-    quantidade: 5000,
-    unidade: "un",
-    valor_unitario: 15,
-    valor_total: 75000,
-    status: "validado",
-    classification: "B",
-    accumulated_percentage: 80,
-  },
-  {
-    id: "item_4",
-    descricao: "Areia lavada",
-    quantidade: 200,
-    unidade: "m³",
-    valor_unitario: 120,
-    valor_total: 24000,
-    status: "validado",
-    classification: "B",
-    accumulated_percentage: 83,
-  },
-  {
-    id: "item_5",
-    descricao: "Britas diversas",
-    quantidade: 350,
-    unidade: "m³",
-    valor_unitario: 85,
-    valor_total: 29750,
-    status: "validado",
-    classification: "B",
-    accumulated_percentage: 86,
-  },
-  {
-    id: "item_6",
-    descricao: "Cerâmica para revestimento",
-    quantidade: 2000,
-    unidade: "m²",
-    valor_unitario: 35,
-    valor_total: 70000,
-    status: "validado",
-    classification: "B",
-    accumulated_percentage: 95,
-  },
-  {
-    id: "item_7",
-    descricao: "Tinta acrílica",
-    quantidade: 200,
-    unidade: "L",
-    valor_unitario: 45,
-    valor_total: 9000,
-    status: "validado",
-    classification: "C",
-    accumulated_percentage: 97,
-  },
-  {
-    id: "item_8",
-    descricao: "Parafusos diversos",
-    quantidade: 5000,
-    unidade: "un",
-    valor_unitario: 0.5,
-    valor_total: 2500,
-    status: "validado",
-    classification: "C",
-    accumulated_percentage: 99,
-  },
-  {
-    id: "item_9",
-    descricao: "Vedantes",
-    quantidade: 50,
-    unidade: "un",
-    valor_unitario: 120,
-    valor_total: 6000,
-    status: "validado",
-    classification: "C",
-    accumulated_percentage: 100,
-  },
-];
-
 const CurvaABC: React.FC = () => {
   const { uploadId } = useParams();
   const navigate = useNavigate();
   const [selectedFilter, setSelectedFilter] = useState<"all" | "A" | "B" | "C">(
     "all",
   );
-  const [items, setItems] = useState<Item[]>(MOCK_ITEMS);
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+
+  // Buscar dados reais da Curva ABC
+  useEffect(() => {
+    const fetchCurvaABC = async () => {
+      if (!uploadId) {
+        setError("Upload ID não fornecido");
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await getCurvaABC(uploadId);
+        setItems(response.items || []);
+      } catch (err: any) {
+        console.error("Erro ao buscar Curva ABC:", err);
+        setError(err.message || "Erro ao carregar dados da Curva ABC");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchCurvaABC();
+  }, [uploadId]);
 
   // Calcula resumo
   const summary = useMemo(() => {
@@ -282,7 +207,44 @@ const CurvaABC: React.FC = () => {
           </div>
         </div>
 
-        {/* Cards de Resumo */}
+        {/* Loading State */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center py-16">
+            <Loader2 className="w-12 h-12 animate-spin text-blue-600 mb-4" />
+            <p className="text-slate-600">Carregando dados da Curva ABC...</p>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && !loading && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-6 mb-8">
+            <div className="flex gap-3">
+              <AlertCircle size={20} className="text-red-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <h3 className="font-semibold text-red-900">Erro ao carregar dados</h3>
+                <p className="text-sm text-red-700 mt-1">{error}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Dados carregados */}
+        {!loading && !error && (
+          <>
+            {items.length === 0 ? (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-8">
+                <div className="flex gap-3">
+                  <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <h3 className="font-semibold text-amber-900">Nenhum item encontrado</h3>
+                    <p className="text-sm text-amber-700 mt-1">
+                      Não foi possível extrair itens do orçamento. Verifique se o PDF contém tabelas com dados válidos.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           <div className="bg-white rounded-lg p-4 shadow-sm border border-slate-200">
             <p className="text-sm text-slate-600">Valor Total</p>
@@ -528,6 +490,10 @@ const CurvaABC: React.FC = () => {
             {aiLoading ? "Processando IA..." : "Próximo: IA"} <ChevronRight size={18} />
           </button>
         </div>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

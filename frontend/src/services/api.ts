@@ -6,15 +6,15 @@ import {
 } from "./firebase";
 
 // Detectar URL da API
-// Em desenvolvimento: usar porta do Vite se houver, senão localhost:8000
-// Em produção: usar a mesma origem
+// Em desenvolvimento: usar porta do Vite se houver, senão localhost:8001
+// Em produção: usar variável de ambiente ou mesma origem
 const getAPIBase = () => {
   if (import.meta.env.DEV) {
-    // Desenvolvimento: tentar usar localhost:8000
-    return "http://localhost:8000";
+    // Desenvolvimento: usar localhost:8001 (servidor unificado)
+    return "http://localhost:8001";
   } else {
-    // Produção: usar a mesma origem (útil se frontend e backend estão na mesma porta)
-    return window.location.origin;
+    // Produção: usar variável de ambiente VITE_API_URL ou mesma origem
+    return import.meta.env.VITE_API_URL || window.location.origin;
   }
 };
 
@@ -122,6 +122,20 @@ export const getOrcamento = async (uploadId: string) => {
   } catch (error: any) {
     throw new Error(
       error.response?.data?.detail || "Erro ao recuperar orçamento",
+    );
+  }
+};
+
+// ==================== CURVA ABC OPERATIONS ====================
+
+// Buscar dados da Curva ABC
+export const getCurvaABC = async (uploadId: string) => {
+  try {
+    const response = await apiClient.get(`/api/curva-abc/${uploadId}`);
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao buscar dados da Curva ABC",
     );
   }
 };

@@ -24,8 +24,10 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 52428800))  # 50MB default
 FRONTEND_URLS = [
     "http://localhost:5173",
     "http://localhost:3000",
+    "http://localhost:8001",  # Porta unificada backend + frontend
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
+    "http://127.0.0.1:8001",  # Porta unificada backend + frontend
     "https://410-thora.netlify.app",  # Frontend Netlify
     os.getenv("FRONTEND_URL", ""),  # Production frontend URL via env var
 ]
@@ -37,12 +39,12 @@ API_TITLE = "Automação de Orçamentos"
 API_VERSION = "1.0.0"
 API_DESCRIPTION = "API para processar e gerar orçamentos de obras"
 
-# AI (OpenAI)
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# AI (Google Gemini)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # Debug: verificar se chave foi carregada
-if OPENAI_API_KEY:
-    print(f"✅ OPENAI_API_KEY carregada (primeiros 10 chars): {OPENAI_API_KEY[:10]}...")
+if GEMINI_API_KEY:
+    print(f"✅ GEMINI_API_KEY carregada (primeiros 10 chars): {GEMINI_API_KEY[:10]}...")
 else:
-    print("⚠️  OPENAI_API_KEY NÃO encontrada no .env")
+    print("⚠️  GEMINI_API_KEY NÃO encontrada no .env")

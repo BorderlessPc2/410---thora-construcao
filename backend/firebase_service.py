@@ -16,40 +16,45 @@ logger = logging.getLogger(__name__)
 
 # Initialize Firebase
 db = None
+_firebase_disabled = os.getenv("FIREBASE_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
-try:
-    # Check if Firebase is already initialized
-    firebase_admin.get_app()
-    db = firestore.client()
-    logger.info("✅ Firebase já inicializado")
-except ValueError:
-    # Firebase not initialized, try to initialize
+if _firebase_disabled:
+    logger.warning("⚠️  Firebase desativado por FIREBASE_DISABLED. Rodando em modo offline.")
+    db = None
+else:
     try:
-        # Try to load from environment variable first (Render)
-        firebase_creds_env = os.getenv("FIREBASE_CREDENTIALS")
-        if firebase_creds_env:
-            creds_dict = json.loads(firebase_creds_env)
-            creds = credentials.Certificate(creds_dict)
-            firebase_admin.initialize_app(creds)
-            db = firestore.client()
-            logger.info("✅ Firebase initialized com environment variable")
-        else:
-            # Fallback to local file
-            creds_path = Path(__file__).parent / "firebase_credentials.json"
-            if creds_path.exists():
-                creds = credentials.Certificate(str(creds_path))
+        # Check if Firebase is already initialized
+        firebase_admin.get_app()
+        db = firestore.client()
+        logger.info("✅ Firebase já inicializado")
+    except ValueError:
+        # Firebase not initialized, try to initialize
+        try:
+            # Try to load from environment variable first (Render)
+            firebase_creds_env = os.getenv("FIREBASE_CREDENTIALS")
+            if firebase_creds_env:
+                creds_dict = json.loads(firebase_creds_env)
+                creds = credentials.Certificate(creds_dict)
                 firebase_admin.initialize_app(creds)
                 db = firestore.client()
-                logger.info("✅ Firebase initialized com credentials file")
+                logger.info("✅ Firebase initialized com environment variable")
             else:
-                logger.error("❌ firebase_credentials.json não encontrado e FIREBASE_CREDENTIALS não definido!")
-                raise FileNotFoundError("firebase_credentials.json não encontrado")
+                # Fallback to local file
+                creds_path = Path(__file__).parent / "firebase_credentials.json"
+                if creds_path.exists():
+                    creds = credentials.Certificate(str(creds_path))
+                    firebase_admin.initialize_app(creds)
+                    db = firestore.client()
+                    logger.info("✅ Firebase initialized com credentials file")
+                else:
+                    logger.warning("⚠️  firebase_credentials.json não encontrado e FIREBASE_CREDENTIALS não definido! Rodando em modo offline.")
+                    db = None
+        except Exception as e:
+            logger.error(f"❌ Firebase initialization failed: {e}")
+            db = None
     except Exception as e:
-        logger.error(f"❌ Firebase initialization failed: {e}")
+        logger.error(f"❌ Error initializing Firebase: {e}")
         db = None
-except Exception as e:
-    logger.error(f"❌ Error initializing Firebase: {e}")
-    db = None
 
 
 class OrcamentoFirestore:
@@ -77,8 +82,8 @@ class OrcamentoFirestore:
             Document ID in Firestore
         """
         if not db:
-            logger.error("❌ Firestore not initialized")
-            raise Exception("Firestore not available")
+            logger.warning("⚠️  Firestore not initialized - running in offline mode")
+            return upload_id
         
         try:
             doc_data = {
