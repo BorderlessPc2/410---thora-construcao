@@ -9,7 +9,9 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { uploadPDF, extractPDF } from "../services/api";
+import { btnPrimary } from "../components/ui/buttonClasses";
 
 export default function NovoOrcamento() {
   const navigate = useNavigate();
@@ -56,42 +58,37 @@ export default function NovoOrcamento() {
 
     try {
       // Step 1: Upload do arquivo
-      console.log("📤 Enviando arquivo para backend...");
       const uploadResponse = await uploadPDF(file);
       const uploadId = uploadResponse.upload_id;
-      console.log("✅ Upload bem-sucedido! ID:", uploadId);
 
-      // Step 2: Extração de dados
-      console.log("📊 Extraindo dados do PDF...");
       setUploadStep("extract");
       const extractResponse = await extractPDF(uploadId);
-      console.log("✅ Extração bem-sucedida!");
-      console.log("Tabelas encontradas:", extractResponse.tables_found);
 
       setUploadStatus("success");
-
-      // Navegar com dados extraídos
-      setTimeout(() => {
-        navigate("/validacao", {
-          state: {
-            file,
-            uploadId,
-            extractedData: extractResponse.tables,
-          },
-        });
-      }, 1500);
+      toast.success("PDF processado", {
+        description: "Abrindo a tela de validação…",
+      });
+      navigate("/validacao", {
+        state: {
+          file,
+          uploadId,
+          extractedData: extractResponse.tables,
+        },
+      });
     } catch (error: any) {
-      console.error("❌ Erro:", error.message);
+      console.error("Erro no upload:", error.message);
       setUploadStatus("error");
-      setErrorMessage(error.message || "Erro ao processar arquivo");
+      const msg = error.message || "Erro ao processar arquivo";
+      setErrorMessage(msg);
+      toast.error("Falha no processamento", { description: msg });
     }
   };
 
   return (
     <div className="flex-1 overflow-auto flex flex-col items-center px-6 py-12 bg-slate-50">
-      <h1 className="text-2xl font-semibold text-gray-900">Novo Orçamento</h1>
+      <h1 className="text-2xl font-semibold text-slate-900">Novo Orçamento</h1>
 
-      <p className="mt-2 text-gray-500">
+      <p className="mt-2 text-slate-600">
         Faça upload do PDF da planilha para começar a extração dos dados
       </p>
 
@@ -115,15 +112,15 @@ export default function NovoOrcamento() {
             />
           </div>
 
-          <p className="text-lg font-medium text-gray-800">
+          <p className="text-lg font-medium text-slate-800">
             {isDragActive
               ? "Pode soltar o arquivo agora"
               : "Arraste e solte seu PDF"}
           </p>
 
-          <p className="text-sm text-gray-500">ou clique para selecionar</p>
+          <p className="text-sm text-slate-500">ou clique para selecionar</p>
 
-          <p className="mt-2 text-xs text-gray-400">
+          <p className="mt-2 text-xs text-slate-400">
             Suporta arquivos PDF de até 50MB
           </p>
         </div>
@@ -147,10 +144,12 @@ export default function NovoOrcamento() {
               {/* Botão de Remover (só aparece se não estiver enviando ou finalizado) */}
               {uploadStatus === "idle" && (
                 <button
+                  type="button"
                   onClick={removeFile}
-                  className="p-2 text-slate-400 hover:text-red-500 hover:bg-slate-100 rounded-full transition"
+                  className="rounded-full p-2 text-slate-400 transition hover:bg-slate-100 hover:text-red-600"
+                  aria-label="Remover arquivo selecionado"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="h-5 w-5" />
                 </button>
               )}
             </div>
@@ -197,18 +196,18 @@ export default function NovoOrcamento() {
 
           {/* Botão de Ação */}
           <button
+            type="button"
             onClick={handleUpload}
             disabled={uploadStatus !== "idle"}
-            className={`mt-6 w-full py-3 px-4 rounded-xl font-medium text-white transition flex items-center justify-center gap-2 cursor-pointer
-              ${
-                uploadStatus === "success"
-                  ? "bg-emerald-600 hover:bg-emerald-700"
-                  : "bg-slate-900 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
-              }`}
+            className={`${btnPrimary} mt-6 w-full py-3 ${
+              uploadStatus === "success"
+                ? "!bg-emerald-600 hover:!bg-emerald-700"
+                : ""
+            } disabled:cursor-not-allowed`}
           >
-            {uploadStatus === "idle" && "Enviar e Processar"}
-            {uploadStatus === "uploading" && "Enviando..."}
-            {uploadStatus === "success" && "Ir para Validação"}
+            {uploadStatus === "idle" && "Enviar e processar"}
+            {uploadStatus === "uploading" && "Enviando…"}
+            {uploadStatus === "success" && "Continuar"}
           </button>
         </div>
       )}

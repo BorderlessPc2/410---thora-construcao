@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import {
   TrendingUp,
   DollarSign,
@@ -230,7 +231,9 @@ const Analytics: React.FC = () => {
       pdf.save(`Dashboard-Analytics-${new Date().toISOString().split("T")[0]}.pdf`);
     } catch (error) {
       console.error("Erro ao exportar dashboard:", error);
-      alert("Erro ao exportar dashboard. Tente novamente.");
+      toast.error("Não foi possível exportar o dashboard", {
+        description: "Tente novamente em instantes.",
+      });
     } finally {
       setIsExporting(false);
     }

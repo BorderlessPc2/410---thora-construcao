@@ -433,20 +433,40 @@ def _get_upload_data_from_sources(upload_id: str) -> Dict | None:
     try:
         firestore_data = OrcamentoFirestore.get_orcamento_by_upload_id(upload_id)
         if firestore_data:
+            raw_items = firestore_data.get("items")
+            if not raw_items and firestore_data.get("itemsData"):
+                idata = firestore_data.get("itemsData") or {}
+                if isinstance(idata, dict):
+                    raw_items = idata.get("items", [])
+            if raw_items is None:
+                raw_items = []
+
+            tables_fs = firestore_data.get("tables") or []
+            items_data_resumo = {}
+            if isinstance(firestore_data.get("itemsData"), dict):
+                items_data_resumo = (firestore_data.get("itemsData") or {}).get("resumo") or {}
+
+            ai_raw = firestore_data.get("aiAnalysis") or firestore_data.get("ai_analysis")
+            ai_analysis = ai_raw if isinstance(ai_raw, dict) else None
+
             # Normalizar formato do Firestore para o formato esperado
             normalized = {
                 "uploadId": firestore_data.get("uploadId", upload_id),
                 "userId": firestore_data.get("userId"),
                 "filename": firestore_data.get("filename"),
-                "items": firestore_data.get("items", []),
-                "tables": firestore_data.get("tables", []),
-                "resumo": firestore_data.get("resumo", {}),
+                "items": raw_items,
+                "tables": tables_fs,
+                "resumo": firestore_data.get("resumo") or items_data_resumo,
                 "uploadedAt": firestore_data.get("uploadedAt"),
                 "extractedAt": firestore_data.get("extractedAt"),
-                "tablesFound": len(firestore_data.get("tables", [])),
-                "itemsFound": len(firestore_data.get("items", [])),
+                "tablesFound": len(tables_fs),
+                "itemsFound": len(raw_items)
+                if raw_items
+                else int(firestore_data.get("itemsFound") or 0),
                 "status": firestore_data.get("status", "completed"),
             }
+            if ai_analysis:
+                normalized["ai_analysis"] = ai_analysis
             _OFFLINE_CACHE[upload_id] = normalized
             return normalized
     except Exception as e:
@@ -454,6 +474,59 @@ def _get_upload_data_from_sources(upload_id: str) -> Dict | None:
     
     # 4. Fallback
     return None
+
+
+def _build_tables_text_for_ai(upload_data: Dict) -> str:
+    """Monta texto para o prompt: tabelas extraídas ou, na falta delas, lista de itens."""
+    tables = upload_data.get("tables") or []
+    parts: List[str] = []
+
+    for table in tables:
+        rows = table.get("rows", [])
+        table_text = "Página {}, Tabela: {} linhas x {} colunas\n".format(
+            table.get("page", "?"),
+            len(rows),
+            table.get("columns", "?"),
+        )
+        for row in rows[:20]:
+            table_text += " | ".join(str(cell)[:40] for cell in row) + "\n"
+        parts.append(table_text + "\n---\n")
+
+    items = upload_data.get("items") or []
+    if not parts and items:
+        block = "=== Itens disponíveis (sem tabelas brutas no cache) ===\n"
+        for idx, item in enumerate(items[:250], start=1):
+            if not isinstance(item, dict):
+                continue
+            desc = str(
+                item.get("descricao")
+                or item.get("description")
+                or item.get("Description")
+                or "",
+            )[:120]
+            q = item.get("quantidade", item.get("quantity", item.get("qty")))
+            u = str(item.get("unidade") or item.get("unit") or "")
+            vu = item.get("valor_unitario", item.get("unitValue"))
+            vt = item.get("valor_total", item.get("totalValue"))
+            block += f"{idx}. {desc} | qtd={q} | un={u} | vu={vu} | vt={vt}\n"
+        parts.append(block)
+
+    return "".join(parts)
+
+
+def _persist_ai_analysis_to_firestore(upload_id: str, ai_payload: Dict) -> None:
+    """Grava resultado da análise de IA no documento do orçamento (se Firestore ativo)."""
+    try:
+        fs_doc = OrcamentoFirestore.get_orcamento_by_upload_id(upload_id)
+        if not fs_doc or not fs_doc.get("id"):
+            return
+        OrcamentoFirestore.update_orcamento(
+            fs_doc["id"],
+            {"aiAnalysis": ai_payload},
+        )
+    except Exception as exc:
+        logger.warning("Não foi possível persistir aiAnalysis no Firestore: %s", exc)
+
 
 # FastAPI app
 app = FastAPI(
@@ -514,12 +587,6 @@ class AIStandardizeRequest(BaseModel):
 
 @app.post("/api/ai/standardize")
 async def ai_standardize_items(payload: AIStandardizeRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="Recurso de IA indisponível: chave do Gemini não configurada",
-        )
-
     system_message = (
         "Você é um assistente de normalização de dados de orçamento. "
         "Padronize descrições e unidades de medida, mantendo quantidades e valores. "
@@ -950,8 +1017,8 @@ async def analyze_with_ai(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Análise inteligente de dados extraídos com IA Gemini
-    
+    Análise inteligente de dados extraídos (Ollama, Gemini, OpenRouter, Groq, OpenAI ou fallback local).
+
     Usa IA para:
     - Identificar estrutura de planilha orçamentária
     - Reconhecer colunas (descrição, quantidade, unidade, valor)
@@ -974,47 +1041,28 @@ async def analyze_with_ai(
         }
     """
     try:
-        if not GEMINI_API_KEY:
-            raise HTTPException(
-                status_code=503,
-                detail="Recurso de IA indisponível: chave do Gemini não configurada",
-            )
-        
-        # Buscar dados extraídos
-        upload_data = _OFFLINE_CACHE.get(payload.upload_id)
+        # Buscar dados extraídos (memória, disco ou Firestore)
+        upload_data = _get_upload_data_from_sources(payload.upload_id)
         if not upload_data:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    f"❌ Dados extraídos não encontrados: {payload.upload_id}. "
-                    "Se o servidor foi reiniciado e não houver dados no Firestore, "
-                    "reenvie o PDF para gerar um novo upload_id."
+                    f"Dados extraídos não encontrados: {payload.upload_id}. "
+                    "Se o servidor reiniciou, reenvie o PDF ou garanta que o orçamento "
+                    "está salvo no Firestore com o mesmo uploadId."
                 ),
             )
 
         expected_user = upload_data.get("userId")
         if expected_user and str(expected_user) != str(user_id):
             raise HTTPException(status_code=403, detail="Acesso negado")
-        
-        tables = upload_data.get("tables", [])
-        if not tables:
+
+        tables_text = _build_tables_text_for_ai(upload_data)
+        if not tables_text.strip():
             raise HTTPException(
                 status_code=400,
-                detail="Nenhuma tabela encontrada para análise",
+                detail="Nenhuma tabela ou item encontrado para análise",
             )
-        
-        # Preparar texto das tabelas para análise
-        tables_text = ""
-        for table in tables:
-            rows = table.get("rows", [])
-            table_text = "Página {}, Tabela: {} linhas x {} colunas\n".format(
-                table.get("page", "?"),
-                len(rows),
-                table.get("columns", "?")
-            )
-            for row in rows[:20]:  # Limitar a 20 linhas por tabela para análise
-                table_text += " | ".join(str(cell)[:40] for cell in row) + "\n"
-            tables_text += table_text + "\n---\n"
         
         # Payload para IA
         system_message = """Você é um especialista em análise de orçamentos e planilhas de construção civil.
@@ -1183,16 +1231,19 @@ Regras:
         if not summary.get("total_items"):
             summary["total_items"] = len(items)
         
-        # Salvar análise em cache
-        _OFFLINE_CACHE[payload.upload_id]["ai_analysis"] = {
+        # Salvar análise em cache (memória + disco) e Firestore
+        ai_analysis_payload = {
             "analyzed_at": datetime.now().isoformat(),
             "provider": provider_used,
             "warnings": errors,
             "structure": structure,
             "items": items,
-            "summary": summary
+            "summary": summary,
         }
-        
+        _OFFLINE_CACHE[payload.upload_id]["ai_analysis"] = ai_analysis_payload
+        _save_extracted_cache(payload.upload_id, _OFFLINE_CACHE[payload.upload_id])
+        _persist_ai_analysis_to_firestore(payload.upload_id, ai_analysis_payload)
+
         logger.info(f"✅ Análise concluída: {len(items)} items reconhecidos")
         
         return {
@@ -1522,19 +1573,21 @@ async def get_curva_abc(
         # Ordenar por valor total decrescente
         items.sort(key=lambda x: x["valor_total"], reverse=True)
         
-        # Calcular total e percentuais acumulados
+        # Calcular total e percentuais acumulados (regra Pareto 80/15/5 em valor)
+        # Classifica pelo % acumulado *antes* do item: quem ainda não atingiu 80% do valor total em A
+        # (inclui o item que cruza o corte); evita um único item dominante cair em C.
         total_value = sum(item["valor_total"] for item in items)
         accumulated = 0
-        
+
         for item in items:
+            pct_before = (accumulated / total_value * 100) if total_value > 0 else 0
             accumulated += item["valor_total"]
             accumulated_percentage = (accumulated / total_value * 100) if total_value > 0 else 0
             item["accumulated_percentage"] = round(accumulated_percentage, 1)
-            
-            # Classificar segundo Pareto (80-15-5)
-            if accumulated_percentage <= 80:
+
+            if pct_before < 80:
                 item["classification"] = "A"
-            elif accumulated_percentage <= 95:
+            elif pct_before < 95:
                 item["classification"] = "B"
             else:
                 item["classification"] = "C"

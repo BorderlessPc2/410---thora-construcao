@@ -86,19 +86,30 @@ const CurvaABC: React.FC = () => {
     };
   };
 
+  /**
+   * Curva ABC (Pareto 80/15/5 em valor): ordena por valor total decrescente,
+   * acumula o % sobre o total do orçamento e classifica cada linha pelo % acumulado
+   * **antes** de somar o item (itens necessários para “subir” até 80% do valor ficam em A,
+   * inclusive o que cruza o corte — evita classificar um único item dominante como C).
+   */
   const classifyItemsABC = (baseItems: Item[]): Item[] => {
-    const sortedItems = [...baseItems].sort((a, b) => b.valor_total - a.valor_total);
+    const sortedItems = [...baseItems].sort((a, b) => {
+      const diff = b.valor_total - a.valor_total;
+      if (diff !== 0) return diff;
+      return String(a.id).localeCompare(String(b.id), "pt-BR");
+    });
     const total = sortedItems.reduce((sum, item) => sum + item.valor_total, 0);
     let accumulated = 0;
 
     return sortedItems.map((item) => {
+      const pctBefore = total > 0 ? (accumulated / total) * 100 : 0;
       accumulated += item.valor_total;
       const accumulated_percentage = total > 0 ? (accumulated / total) * 100 : 0;
 
       let classification: "A" | "B" | "C" = "C";
-      if (accumulated_percentage <= 80) {
+      if (pctBefore < 80) {
         classification = "A";
-      } else if (accumulated_percentage <= 95) {
+      } else if (pctBefore < 95) {
         classification = "B";
       }
 
@@ -286,23 +297,29 @@ const CurvaABC: React.FC = () => {
   const getClassificationBadge = (classification?: string) => {
     const badges = {
       A: {
-        color: "bg-red-100 text-red-800",
+        color: "bg-red-50 text-red-800 border border-red-100",
         label: "Alto impacto",
-        icon: "🔴",
+        dot: "bg-red-600",
       },
       B: {
-        color: "bg-amber-100 text-amber-800",
+        color: "bg-amber-50 text-amber-800 border border-amber-100",
         label: "Médio impacto",
-        icon: "🟡",
+        dot: "bg-amber-500",
       },
       C: {
-        color: "bg-green-100 text-green-800",
+        color: "bg-emerald-50 text-emerald-800 border border-emerald-100",
         label: "Baixo impacto",
-        icon: "🟢",
+        dot: "bg-emerald-600",
       },
     };
     const badge = badges[classification as keyof typeof badges];
-    return badge || { color: "", label: "", icon: "" };
+    return (
+      badge || {
+        color: "bg-slate-100 text-slate-700 border border-slate-200",
+        label: "",
+        dot: "bg-slate-400",
+      }
+    );
   };
 
   return (
@@ -311,10 +328,12 @@ const CurvaABC: React.FC = () => {
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
           <button
+            type="button"
             onClick={() => navigate("/validacao")}
-            className="p-2 hover:bg-slate-200 rounded-lg transition"
+            className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-200"
+            aria-label="Voltar para validação"
           >
-            <ArrowLeft size={24} />
+            <ArrowLeft size={24} aria-hidden />
           </button>
           <div>
             <h1 className="text-3xl font-bold">Análise de Curva ABC</h1>
@@ -527,9 +546,14 @@ const CurvaABC: React.FC = () => {
                     >
                       <td className="px-6 py-3">
                         <span
-                          className={`px-3 py-1 rounded-full text-xs font-semibold ${badge.color}`}
+                          className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${badge.color}`}
                         >
-                          {badge.icon} Classe {item.classification}
+                          <span
+                            className={`h-2 w-2 shrink-0 rounded-full ${badge.dot}`}
+                            aria-hidden
+                          />
+                          <span>Classe {item.classification}</span>
+                          <span className="sr-only">{badge.label}</span>
                         </span>
                       </td>
                       <td className="px-6 py-3 font-medium text-slate-900">
@@ -580,16 +604,18 @@ const CurvaABC: React.FC = () => {
               </h3>
               <ul className="text-sm text-blue-800 mt-2 space-y-1">
                 <li>
-                  • <strong>Classe A (20% dos itens):</strong> Responsáveis por
-                  ~80% do valor. Requerem atenção prioritária.
+                  • Itens são ordenados pelo <strong>valor total</strong> (maior
+                  primeiro). O gráfico de barras usa o <strong>% acumulado</strong>{" "}
+                  após cada linha.
                 </li>
                 <li>
-                  • <strong>Classe B (30% dos itens):</strong> Responsáveis por
-                  ~15% do valor. Controle regular.
+                  • <strong>Classe A:</strong> linhas enquanto o acumulado ainda
+                  não atingiu 80% do valor do orçamento (regra 80/15/5 em valor).
                 </li>
                 <li>
-                  • <strong>Classe C (50% dos itens):</strong> Responsáveis por
-                  ~5% do valor. Controle simplificado.
+                  • <strong>Classe B:</strong> de 80% a 95% do valor acumulado.{" "}
+                  <strong>Classe C:</strong> acima de 95%. A quantidade de itens
+                  em cada classe depende da concentração do seu orçamento.
                 </li>
               </ul>
             </div>

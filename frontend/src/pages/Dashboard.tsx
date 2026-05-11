@@ -1,8 +1,11 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { RefreshCw } from "lucide-react";
 import { useAuth } from "../features/auth/AuthContext";
 import { listOrcamentosByUserId } from "../features/orcamentos/orcamentoRepository";
 import type { Orcamento } from "../features/orcamentos/orcamentoTypes";
+import { btnPrimary, btnSecondary } from "../components/ui/buttonClasses";
 
 interface ResumoCardProps {
   titulo: string;
@@ -28,10 +31,10 @@ const ResumoCard: React.FC<ResumoCardProps> = ({
 }) => {
   return (
     <div
-      className={`rounded-2xl p-6 border ${variantStyles[variant]} flex flex-col gap-2`}
+      className={`rounded-2xl border p-6 ${variantStyles[variant]} flex flex-col gap-2`}
     >
       <p className="text-sm text-slate-600">{titulo}</p>
-      <p className="text-4xl font-bold">{valor}</p>
+      <p className="text-4xl font-bold tabular-nums">{valor}</p>
       <p className="text-sm text-slate-600">{descricao}</p>
       {extra && (
         <p className="text-sm font-medium text-emerald-600">{extra}</p>
@@ -45,21 +48,28 @@ const Dashboard: React.FC = () => {
   const { user } = useAuth();
   const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const fetchOrcamentos = useCallback(async () => {
+    if (!user?.uid) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const data = await listOrcamentosByUserId(user.uid);
+      setOrcamentos(data);
+    } catch (e: unknown) {
+      const msg =
+        e instanceof Error ? e.message : "Não foi possível carregar os orçamentos.";
+      setLoadError(msg);
+      toast.error("Falha ao carregar dados", { description: msg });
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.uid]);
 
   useEffect(() => {
-    const run = async () => {
-      if (!user?.uid) return;
-      setLoading(true);
-      try {
-        const data = await listOrcamentosByUserId(user.uid);
-        setOrcamentos(data);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    run();
-  }, [user?.uid]);
+    fetchOrcamentos();
+  }, [fetchOrcamentos]);
 
   const stats = useMemo(() => {
     const total = orcamentos.length;
@@ -71,28 +81,43 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="flex-1 overflow-auto bg-slate-50">
-      <div className="mx-auto w-full max-w-7xl px-6 py-8">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-10">
+      <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+        <div className="mb-8 flex flex-col gap-4 sm:mb-10 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-4xl font-bold text-slate-900">
+            <h1 className="text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
               Torre de Controle
             </h1>
-            <p className="text-slate-600 mt-1">
+            <p className="mt-1 text-slate-600">
               Gerencie todos os seus orçamentos de obra em um só lugar
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => navigate("/orcamento")}
-            className="flex items-center gap-2 rounded-xl bg-slate-900 px-6 py-3 text-white font-medium hover:bg-slate-800 transition cursor-pointer"
-          >
-            + Novo Orçamento
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void fetchOrcamentos()}
+              disabled={loading}
+              className={`${btnSecondary} shrink-0`}
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              Atualizar
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/orcamento")}
+              className={btnPrimary}
+            >
+              Novo Orçamento
+            </button>
+          </div>
         </div>
 
-        {/* Cards resumo */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
+        {loadError && !loading && (
+          <div className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {loadError}
+          </div>
+        )}
+
+        <div className="mb-10 grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6 lg:grid-cols-4">
           <ResumoCard
             titulo="Total de Orçamentos"
             valor={loading ? "—" : String(stats.total)}
@@ -100,106 +125,139 @@ const Dashboard: React.FC = () => {
             variant="blue"
           />
           <ResumoCard
-            titulo="Em Processamento"
+            titulo="Em processamento"
             valor={loading ? "—" : String(stats.processing)}
-            descricao="Aguardando OCR"
+            descricao="Extração ou análise em andamento"
             variant="gray"
           />
           <ResumoCard
-            titulo="Aguardando Validação"
-            valor="—"
-            descricao="(em breve)"
+            titulo="Com erro"
+            valor={loading ? "—" : String(stats.error)}
+            descricao="Precisam de atenção"
             variant="yellow"
           />
           <ResumoCard
             titulo="Finalizados"
             valor={loading ? "—" : String(stats.completed)}
-            descricao="Prontos para uso"
+            descricao="Concluídos com sucesso"
             variant="green"
           />
         </div>
 
-        {/* Tabela */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200">
-          <div className="flex items-center justify-between px-6 py-5 border-b border-slate-200">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-5">
             <h2 className="text-lg font-semibold text-slate-900">
-              Orçamentos Recentes
+              Orçamentos recentes
             </h2>
             <button
               type="button"
-              className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 cursor-pointer"
+              onClick={() => navigate("/relatorios")}
+              className={`${btnPrimary} w-full sm:w-auto`}
             >
               Ver todos
             </button>
           </div>
 
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500">
-              <tr>
-                <th className="text-left px-6 py-4">Obra / Projeto</th>
-                <th className="text-left px-6 py-4">Status</th>
-                <th className="text-right px-6 py-4">Valor Total</th>
-                <th className="text-right px-6 py-4">Itens</th>
-                <th className="text-right px-6 py-4">Atualizado em</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {loading ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead className="bg-slate-50 text-left text-slate-500">
                 <tr>
-                  <td className="px-6 py-6 text-slate-500" colSpan={5}>
-                    Carregando orçamentos…
-                  </td>
+                  <th className="px-4 py-3 sm:px-6 sm:py-4">Obra / Projeto</th>
+                  <th className="px-4 py-3 sm:px-6 sm:py-4">Status</th>
+                  <th className="px-4 py-3 text-right sm:px-6 sm:py-4">Valor total</th>
+                  <th className="px-4 py-3 text-right sm:px-6 sm:py-4">Itens</th>
+                  <th className="px-4 py-3 text-right sm:px-6 sm:py-4">Atualizado</th>
                 </tr>
-              ) : orcamentos.length === 0 ? (
-                <tr>
-                  <td className="px-6 py-6 text-slate-500" colSpan={5}>
-                    Nenhum orçamento encontrado. Clique em “Novo Orçamento” para começar.
-                  </td>
-                </tr>
-              ) : (
-                orcamentos.slice(0, 20).map((o) => {
-                  const statusLabel =
-                    o.status === "completed"
-                      ? "Finalizado"
-                      : o.status === "processing"
-                        ? "Em Processamento"
-                        : "Erro";
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {loading ? (
+                  <tr>
+                    <td className="px-4 py-8 text-slate-500 sm:px-6" colSpan={5}>
+                      Carregando orçamentos…
+                    </td>
+                  </tr>
+                ) : loadError ? (
+                  <tr>
+                    <td className="px-4 py-8 sm:px-6" colSpan={5}>
+                      <p className="text-slate-600">Não foi possível carregar a lista.</p>
+                      <button
+                        type="button"
+                        onClick={() => void fetchOrcamentos()}
+                        className={`${btnSecondary} mt-3`}
+                      >
+                        Tentar novamente
+                      </button>
+                    </td>
+                  </tr>
+                ) : orcamentos.length === 0 ? (
+                  <tr>
+                    <td className="px-4 py-8 text-slate-500 sm:px-6" colSpan={5}>
+                      Nenhum orçamento encontrado. Use{" "}
+                      <button
+                        type="button"
+                        className="font-medium text-blue-600 underline-offset-2 hover:underline"
+                        onClick={() => navigate("/orcamento")}
+                      >
+                        Novo Orçamento
+                      </button>{" "}
+                      para começar.
+                    </td>
+                  </tr>
+                ) : (
+                  orcamentos.slice(0, 20).map((o) => {
+                    const statusLabel =
+                      o.status === "completed"
+                        ? "Finalizado"
+                        : o.status === "processing"
+                          ? "Em processamento"
+                          : "Erro";
 
-                  const statusPill =
-                    o.status === "completed"
-                      ? "bg-emerald-100 text-emerald-700"
-                      : o.status === "processing"
-                        ? "bg-blue-100 text-blue-700"
-                        : "bg-red-100 text-red-700";
+                    const statusPill =
+                      o.status === "completed"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : o.status === "processing"
+                          ? "bg-blue-100 text-blue-800"
+                          : "bg-red-100 text-red-800";
 
-                  const updatedAt = (o.updatedAt ?? o.extractedAt ?? o.uploadedAt).toLocaleString("pt-BR");
+                    const updatedAt = (
+                      o.updatedAt ??
+                      o.extractedAt ??
+                      o.uploadedAt
+                    ).toLocaleString("pt-BR");
 
-                  return (
-                    <tr key={o.id} className="hover:bg-slate-50">
-                      <td className="px-6 py-4">
-                        <p className="font-medium text-slate-900">
-                          {o.filename || o.uploadId}
-                        </p>
-                        <p className="text-xs text-slate-500">
-                          Upload: {o.uploadedAt.toLocaleDateString("pt-BR")}
-                        </p>
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`rounded-full px-3 py-1 text-xs font-medium ${statusPill}`}>
-                          {statusLabel}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-right">—</td>
-                      <td className="px-6 py-4 text-right">{o.itemsFound ?? "—"}</td>
-                      <td className="px-6 py-4 text-right text-slate-500">
-                        {updatedAt}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                    return (
+                      <tr key={o.id} className="hover:bg-slate-50/80">
+                        <td className="px-4 py-4 sm:px-6">
+                          <p className="font-medium text-slate-900">
+                            {o.filename || o.uploadId}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            Upload: {o.uploadedAt.toLocaleDateString("pt-BR")}
+                          </p>
+                        </td>
+                        <td className="px-4 py-4 sm:px-6">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${statusPill}`}
+                          >
+                            {statusLabel}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4 text-right text-slate-600 sm:px-6">
+                          —
+                        </td>
+                        <td className="px-4 py-4 text-right tabular-nums sm:px-6">
+                          {o.itemsFound ?? "—"}
+                        </td>
+                        <td className="px-4 py-4 text-right text-slate-500 sm:px-6">
+                          {updatedAt}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

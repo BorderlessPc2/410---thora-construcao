@@ -14,9 +14,12 @@ import {
   Download,
   CheckCircle2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { exportToXLSX } from "../services/api";
 import { useAuth } from "../features/auth/AuthContext";
 import { upsertOrcamento } from "../features/orcamentos/orcamentoRepository";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { btnAccent, btnMuted, btnSuccess, iconButton } from "../components/ui/buttonClasses";
 
 // --- CONFIGURAÇÃO OBRIGATÓRIA DO WORKER (PARA VITE) ---
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
@@ -54,6 +57,7 @@ export default function ValidacaoOrcamento() {
   const [loadError, setLoadError] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [deleteItemId, setDeleteItemId] = useState<number | null>(null);
   const [selectAll, setSelectAll] = useState(false);
 
   // States do PDF Viewer
@@ -270,10 +274,11 @@ export default function ValidacaoOrcamento() {
     );
   };
 
-  const handleDelete = (id: number) => {
-    if (window.confirm("Tem certeza que deseja remover este item?")) {
-      setItems((prev) => prev.filter((item) => item.id !== id));
-    }
+  const confirmRemoveItem = () => {
+    if (deleteItemId == null) return;
+    setItems((prev) => prev.filter((item) => item.id !== deleteItemId));
+    setDeleteItemId(null);
+    toast.success("Item removido");
   };
 
   const handleAddItem = () => {
@@ -318,17 +323,22 @@ export default function ValidacaoOrcamento() {
   // Handler de Exportação XLSX
   const handleExport = async () => {
     if (items.length === 0) {
-      alert("⚠️ Adicione pelo menos um item antes de exportar");
+      toast.warning("Nada para exportar", {
+        description: "Adicione pelo menos um item à planilha.",
+      });
       return;
     }
 
     setIsExporting(true);
     try {
       await exportToXLSX(items);
-      alert("✅ Arquivo exportado com sucesso!");
-    } catch (error: any) {
-      console.error("❌ Erro ao exportar:", error);
-      alert("❌ Erro ao exportar arquivo: " + error.message);
+      toast.success("Planilha exportada", {
+        description: "O download do XLSX deve iniciar em instantes.",
+      });
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : "Erro desconhecido";
+      console.error("Erro ao exportar:", error);
+      toast.error("Falha ao exportar", { description: msg });
     } finally {
       setIsExporting(false);
     }
@@ -337,15 +347,19 @@ export default function ValidacaoOrcamento() {
   const handleFinalizar = async () => {
     const uploadId = location.state?.uploadId as string | undefined;
     if (!user?.uid) {
-      alert("Você precisa estar logado para finalizar.");
+      toast.error("Sessão necessária", { description: "Faça login para finalizar." });
       return;
     }
     if (!uploadId) {
-      alert("Upload ID não encontrado. Reenvie o PDF para gerar um novo orçamento.");
+      toast.error("Upload inválido", {
+        description: "Reenvie o PDF para gerar um novo orçamento.",
+      });
       return;
     }
     if (items.length === 0) {
-      alert("Adicione pelo menos um item antes de finalizar.");
+      toast.warning("Planilha vazia", {
+        description: "Adicione pelo menos um item antes de finalizar.",
+      });
       return;
     }
 
@@ -381,66 +395,87 @@ export default function ValidacaoOrcamento() {
         errorMessage: null,
       });
 
-      alert("Orçamento finalizado e salvo com sucesso!");
+      toast.success("Orçamento salvo", {
+        description: "Redirecionando para o painel…",
+      });
       navigate("/", { replace: true });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Erro ao finalizar orçamento:", err);
-      alert(err?.message || "Erro ao salvar orçamento no Firebase.");
+      const msg =
+        err instanceof Error ? err.message : "Erro ao salvar no Firebase.";
+      toast.error("Não foi possível salvar", { description: msg });
     } finally {
       setIsSaving(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-white font-sans overflow-hidden">
-      {/* HEADER */}
-      <header className="h-16 border-b border-gray-200 px-6 flex items-center justify-between bg-white shrink-0 z-20 shadow-sm">
-        <div className="flex items-center gap-4">
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-100 font-sans">
+      <ConfirmDialog
+        open={deleteItemId !== null}
+        title="Remover item?"
+        description="Esta linha será excluída da planilha de validação."
+        confirmLabel="Remover"
+        cancelLabel="Cancelar"
+        variant="danger"
+        onConfirm={confirmRemoveItem}
+        onCancel={() => setDeleteItemId(null)}
+      />
+
+      <header className="z-20 flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-3 shadow-sm sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
           <button
+            type="button"
             onClick={() => navigate(-1)}
-            className="p-2 hover:bg-gray-100 rounded-full text-gray-500 transition cursor-pointer"
+            className={iconButton}
+            aria-label="Voltar"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="h-5 w-5" />
           </button>
-          <div>
-            <h1 className="font-semibold text-gray-900 leading-tight">
-              Orçamento Extraído
+          <div className="min-w-0">
+            <h1 className="font-semibold leading-tight text-slate-900">
+              Orçamento extraído
             </h1>
-            <p className="text-xs text-gray-500 flex items-center gap-1">
+            <p className="flex items-center gap-1 text-xs text-slate-500">
               {isLoading
-                ? "Carregando..."
-                : `Validação • ${items.length} itens extraídos`}
+                ? "Carregando…"
+                : `Validação · ${items.length} itens`}
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <button
+            type="button"
             disabled={isLoading || items.length === 0 || isExporting}
-            className="bg-slate-600 hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition shadow-sm cursor-pointer"
+            className={`${btnMuted} shrink-0`}
             onClick={handleExport}
             title="Exportar planilha em XLSX"
           >
-            <Download className="w-4 h-4" />
-            {isExporting ? "Exportando..." : "Exportar"}
+            <Download className="h-4 w-4" />
+            {isExporting ? "Exportando…" : "Exportar"}
           </button>
           <button
+            type="button"
             disabled={isLoading || items.length === 0 || isSaving}
-            className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition shadow-sm cursor-pointer"
+            className={`${btnSuccess} shrink-0`}
             onClick={handleFinalizar}
             title="Salvar orçamento no Firebase"
           >
-            <CheckCircle2 className="w-4 h-4" />
-            {isSaving ? "Salvando..." : "Finalizar"}
+            <CheckCircle2 className="h-4 w-4" />
+            {isSaving ? "Salvando…" : "Finalizar"}
           </button>
           <button
+            type="button"
             disabled={isLoading || selectedItemsCount === 0}
-            className="bg-[#0F52BA] hover:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition shadow-sm cursor-pointer"
+            className={`${btnAccent} shrink-0`}
             onClick={() => {
               if (selectedItemsCount === 0) {
-                alert("⚠️ Selecione pelo menos um item para analisar");
+                toast.warning("Selecione itens", {
+                  description: "Marque ao menos um item para analisar na Curva ABC.",
+                });
                 return;
               }
-              const selectedItems = items.filter(item => item.selected);
+              const selectedItems = items.filter((item) => item.selected);
               const uploadId = location.state?.uploadId || "unknown";
               navigate(`/curva-abc/${uploadId}`, {
                 state: {
@@ -450,45 +485,48 @@ export default function ValidacaoOrcamento() {
               });
             }}
           >
-            <Check className="w-4 h-4 " />
+            <Check className="h-4 w-4" />
             Analisar ({selectedItemsCount})
           </button>
         </div>
       </header>
 
-      {/* SPLIT VIEW */}
-      <main className="flex flex-1 overflow-hidden h-[calc(100vh-64px)]">
-        {/* --- ESQUERDA: PDF VIEWER REAL --- */}
-        <div className="w-5/12 bg-slate-100 border-r border-gray-200 flex flex-col relative lg:flex">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
+        <div className="flex max-h-[42vh] min-h-0 w-full flex-col border-b border-slate-200 bg-slate-100 lg:max-h-none lg:w-5/12 lg:border-b-0 lg:border-r">
           {/* Toolbar do PDF */}
-          <div className="h-12 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0 z-10">
-            <span className="text-xs font-semibold text-gray-500 uppercase">
+          <div className="h-12 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-10">
+            <span className="text-xs font-semibold text-slate-500 uppercase">
               PDF Original
             </span>
 
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={() => setScale((s) => Math.max(0.5, s - 0.1))}
-                className="p-1.5 hover:bg-gray-100 rounded text-gray-600 cursor-pointer"
-                title="Diminuir Zoom"
+                className="cursor-pointer rounded p-1.5 text-slate-600 hover:bg-slate-100"
+                title="Diminuir zoom"
+                aria-label="Diminuir zoom do PDF"
               >
-                <ZoomOut className="w-4 h-4" />
+                <ZoomOut className="h-4 w-4" />
               </button>
-              <span className="text-xs font-mono w-12 text-center text-gray-600">
+              <span className="text-xs font-mono w-12 text-center text-slate-600">
                 {(scale * 100).toFixed(0)}%
               </span>
               <button
+                type="button"
                 onClick={() => setScale((s) => Math.min(2.0, s + 0.1))}
-                className="p-1.5 hover:bg-gray-100 rounded text-gray-600 cursor-pointer"
-                title="Aumentar Zoom"
+                className="cursor-pointer rounded p-1.5 text-slate-600 hover:bg-slate-100"
+                title="Aumentar zoom"
+                aria-label="Aumentar zoom do PDF"
               >
-                <ZoomIn className="w-4 h-4 cursor-pointer" />
+                <ZoomIn className="h-4 w-4" />
               </button>
-              <div className="h-6 border-l border-gray-300"></div>
+              <div className="h-6 border-l border-slate-300"></div>
               <button
+                type="button"
                 onClick={() => setScale(0.8)}
-                className="px-2 py-1.5 hover:bg-gray-100 rounded text-gray-600 text-xs font-medium cursor-pointer"
-                title="Ajustar à Largura"
+                className="cursor-pointer rounded px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                title="Ajustar à largura"
               >
                 Ajustar
               </button>
@@ -496,21 +534,25 @@ export default function ValidacaoOrcamento() {
 
             <div className="flex items-center gap-2">
               <button
+                type="button"
                 onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
                 disabled={pageNumber <= 1}
-                className="p-1.5 hover:bg-gray-100 rounded text-gray-600 disabled:opacity-30"
+                className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+                aria-label="Página anterior"
               >
-                <ChevronLeft className="w-4 h-4" />
+                <ChevronLeft className="h-4 w-4" />
               </button>
-              <span className="text-xs text-gray-600">
+              <span className="text-xs text-slate-600">
                 Pág {pageNumber} de {numPages || "--"}
               </span>
               <button
+                type="button"
                 onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
                 disabled={pageNumber >= numPages}
-                className="p-1.5 hover:bg-gray-100 rounded text-gray-600 disabled:opacity-30"
+                className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+                aria-label="Próxima página"
               >
-                <ChevronRight className="w-4 h-4" />
+                <ChevronRight className="h-4 w-4" />
               </button>
             </div>
           </div>
@@ -523,7 +565,7 @@ export default function ValidacaoOrcamento() {
                   file={pdfFile}
                   onLoadSuccess={onDocumentLoadSuccess}
                   loading={
-                    <div className="flex items-center gap-2 text-gray-500">
+                    <div className="flex items-center gap-2 text-slate-500">
                       <Loader2 className="animate-spin w-5 h-5" /> Carregando
                       PDF...
                     </div>
@@ -545,7 +587,7 @@ export default function ValidacaoOrcamento() {
                 </Document>
               </div>
             ) : (
-              <div className="text-center text-gray-400">
+              <div className="text-center text-slate-400">
                 <AlertCircle className="w-10 h-10 mx-auto mb-2 opacity-50" />
                 <p>Nenhum arquivo carregado.</p>
               </div>
@@ -554,26 +596,27 @@ export default function ValidacaoOrcamento() {
         </div>
 
         {/* --- DIREITA: TABELA EDITÁVEL (Mantida Igual) --- */}
-        <div className="w-full lg:w-7/12 bg-white flex flex-col h-full overflow-hidden">
+        <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-white lg:min-w-0">
           {/* Header Tabela */}
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-end bg-white shrink-0">
+          <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-end bg-white shrink-0">
             <div className="flex items-center gap-4">
-              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">
+              <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide">
                 Planilha Extraída
               </h2>
               <button
+                type="button"
                 onClick={handleAddItem}
                 disabled={isLoading}
-                className="px-3 py-1.5 bg-emerald-100 hover:bg-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed text-emerald-700 rounded text-xs font-medium transition"
+                className="rounded px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-50 bg-emerald-100"
               >
                 + Adicionar Item
               </button>
             </div>
             <div className="text-right">
-              <span className="text-xs text-gray-500 font-medium uppercase">
+              <span className="text-xs text-slate-500 font-medium uppercase">
                 Total Geral
               </span>
-              <p className="text-lg font-bold text-[#0F52BA] transition-all duration-300">
+              <p className="text-lg font-bold text-blue-700 tabular-nums transition-all duration-300">
                 R$ {formatMoney(totalGeral)}
               </p>
             </div>
@@ -584,7 +627,7 @@ export default function ValidacaoOrcamento() {
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center">
                 <Loader2 className="w-8 h-8 animate-spin text-blue-600 mx-auto mb-2" />
-                <p className="text-gray-600">Processando dados extraídos...</p>
+                <p className="text-slate-600">Processando dados extraídos...</p>
               </div>
             </div>
           )}
@@ -596,8 +639,9 @@ export default function ValidacaoOrcamento() {
                 <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-2" />
                 <p className="text-red-600 font-medium">{loadError}</p>
                 <button
+                  type="button"
                   onClick={() => navigate(-1)}
-                  className="mt-4 px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800"
+                  className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800"
                 >
                   Voltar
                 </button>
@@ -609,7 +653,7 @@ export default function ValidacaoOrcamento() {
           {!isLoading && !loadError && (
             <div className="flex-1 overflow-y-auto pb-20">
               {items.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-400">
+                <div className="flex items-center justify-center h-full text-slate-400">
                   <div className="text-center">
                     <AlertCircle className="w-10 h-10 mx-auto mb-2 opacity-50" />
                     <p>Nenhum item foi extraído do PDF.</p>
@@ -617,7 +661,7 @@ export default function ValidacaoOrcamento() {
                 </div>
               ) : (
                 <table className="w-full text-left border-collapse">
-                  <thead className="bg-gray-50 sticky top-0 z-10 shadow-sm border-b border-gray-200">
+                  <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm border-b border-slate-200">
                     <tr>
                       <th className="px-3 py-3 w-12">
                         <input
@@ -627,28 +671,28 @@ export default function ValidacaoOrcamento() {
                           className="w-4 h-4 text-blue-600 rounded cursor-pointer"
                         />
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider w-24">
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-24">
                         Código
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider">
                         Descrição
                       </th>
-                      <th className="px-2 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center w-14">
+                      <th className="px-2 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-center w-14">
                         Un.
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right w-24">
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right w-24">
                         Qtd.
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right w-28">
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right w-28">
                         Valor Unit.
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right w-28 bg-gray-100">
+                      <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right w-28 bg-slate-100">
                         Total
                       </th>
                       <th className="px-2 py-3 w-8"></th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-100">
+                  <tbody className="divide-y divide-slate-100">
                     {items.map((item) => (
                       <tr
                         key={item.id}
@@ -671,7 +715,7 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "code", e.target.value)
                             }
-                            className="w-full bg-transparent font-mono text-xs text-gray-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
+                            className="w-full bg-transparent font-mono text-xs text-slate-600 focus:outline-none focus:text-blue-600 border-b border-transparent focus:border-blue-500"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -685,7 +729,7 @@ export default function ValidacaoOrcamento() {
                                 e.target.value,
                               )
                             }
-                            className="w-full bg-transparent text-sm text-gray-800 focus:outline-none border-b border-transparent focus:border-blue-500"
+                            className="w-full bg-transparent text-sm text-slate-800 focus:outline-none border-b border-transparent focus:border-blue-500"
                           />
                         </td>
                         <td className="px-2 py-3 text-center">
@@ -695,7 +739,7 @@ export default function ValidacaoOrcamento() {
                             onChange={(e) =>
                               handleChange(item.id, "unit", e.target.value)
                             }
-                            className="w-full text-center bg-gray-50 rounded text-xs font-medium text-gray-600 focus:outline-none focus:ring-1 focus:ring-blue-500 py-1"
+                            className="w-full text-center bg-slate-50 rounded text-xs font-medium text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500 py-1"
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -712,12 +756,12 @@ export default function ValidacaoOrcamento() {
                               )
                             }
                             placeholder="0,00"
-                            className="w-full text-right bg-transparent text-sm font-medium text-gray-700 focus:outline-none border-b border-transparent focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
+                            className="w-full text-right bg-transparent text-sm font-medium text-slate-700 focus:outline-none border-b border-transparent focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
                           />
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center justify-end gap-1 border-b border-transparent focus-within:border-blue-500 transition-colors">
-                            <span className="text-xs text-gray-400">R$</span>
+                            <span className="text-xs text-slate-400">R$</span>
                             <input
                               type="number"
                               step="0.01"
@@ -729,21 +773,23 @@ export default function ValidacaoOrcamento() {
                                   parseFloat(e.target.value) || 0,
                                 )
                               }
-                              className="w-20 text-right bg-transparent text-sm font-medium text-gray-700 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
+                              className="w-20 text-right bg-transparent text-sm font-medium text-slate-700 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none"
                             />
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-right bg-gray-50/50">
-                          <span className="text-sm font-bold text-gray-800">
+                        <td className="px-4 py-3 text-right bg-slate-50/50">
+                          <span className="text-sm font-bold text-slate-800">
                             {formatMoney(item.qty * item.unitPrice)}
                           </span>
                         </td>
                         <td className="px-2 py-3 text-center">
                           <button
-                            onClick={() => handleDelete(item.id)}
-                            className="text-gray-300 hover:text-red-500 transition p-1 rounded hover:bg-red-50"
+                            type="button"
+                            onClick={() => setDeleteItemId(item.id)}
+                            className="rounded p-1 text-slate-400 transition hover:bg-red-50 hover:text-red-600"
+                            aria-label={`Remover item ${item.code}`}
                           >
-                            <Trash2 className="w-4 h-4 cursor-pointer" />
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </td>
                       </tr>

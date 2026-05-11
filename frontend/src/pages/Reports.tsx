@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import {
   Download,
   FileText,
@@ -13,6 +14,8 @@ import {
 } from "lucide-react";
 import jsPDF from "jspdf";
 import { listOrcamentos, getCurvaABC } from "../services/api";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { btnAccent, btnSecondary } from "../components/ui/buttonClasses";
 
 interface Report {
   id: string;
@@ -35,6 +38,7 @@ const Reports: React.FC = () => {
   const [filter, setFilter] = useState<string>("all");
   const [loadingReports, setLoadingReports] = useState(true);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const [deleteReportId, setDeleteReportId] = useState<string | null>(null);
 
   // ── Load real uploads from backend on mount ─────────────────────────────
   useEffect(() => {
@@ -219,35 +223,52 @@ const Reports: React.FC = () => {
       );
 
       pdf.save(`${report.name.replace(/\s+/g, "_")}.pdf`);
-    } catch (err: any) {
-      alert(`Erro ao gerar PDF: ${err.message || err}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.error("Erro ao gerar PDF", { description: msg });
     } finally {
       setGeneratingId(null);
     }
   };
 
-  const handleDeleteReport = (id: string) => {
-    if (window.confirm("Tem certeza que deseja remover este relatório da lista?")) {
-      setReports(reports.filter((r) => r.id !== id));
-    }
+  const confirmRemoveFromList = () => {
+    if (deleteReportId == null) return;
+    setReports((prev) => prev.filter((r) => r.id !== deleteReportId));
+    setDeleteReportId(null);
+    toast.success("Removido da lista local", {
+      description: "O arquivo no servidor não foi apagado.",
+    });
   };
 
   return (
-    <div className="flex flex-col min-h-full bg-slate-50 pb-16">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-8 py-6 shadow-sm">
-        <div className="flex items-center justify-between">
+    <div className="flex min-h-full flex-col bg-slate-50 pb-16">
+      <ConfirmDialog
+        open={deleteReportId !== null}
+        title="Remover da lista?"
+        description="O orçamento continua salvo; apenas some desta visualização até a próxima atualização."
+        confirmLabel="Remover"
+        cancelLabel="Cancelar"
+        variant="danger"
+        onConfirm={confirmRemoveFromList}
+        onCancel={() => setDeleteReportId(null)}
+      />
+
+      <header className="border-b border-slate-200 bg-white px-4 py-5 shadow-sm sm:px-8 sm:py-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-slate-900">Relatórios</h1>
-            <p className="text-slate-600 text-sm">
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+              Relatórios
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
               PDFs gerados com os dados reais dos orçamentos enviados
             </p>
           </div>
           <button
+            type="button"
             onClick={() => navigate("/orcamento")}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition font-medium"
+            className={`${btnAccent} shrink-0`}
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="h-5 w-5" />
             Novo Orçamento
           </button>
         </div>
@@ -262,12 +283,13 @@ const Reports: React.FC = () => {
             { value: "budget", label: "Orçamentos" },
           ].map((f) => (
             <button
+              type="button"
               key={f.value}
               onClick={() => setFilter(f.value)}
-              className={`px-4 py-2 rounded-lg font-medium transition ${
+              className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
                 filter === f.value
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-slate-700 border border-slate-200 hover:border-blue-200"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300"
               }`}
             >
               {f.label}
@@ -290,7 +312,8 @@ const Reports: React.FC = () => {
             <p className="text-slate-500 text-sm mt-1">
               Envie um PDF na aba{" "}
               <button
-                className="text-blue-600 underline"
+                type="button"
+                className="font-medium text-blue-600 underline-offset-2 hover:underline"
                 onClick={() => navigate("/orcamento")}
               >
                 Novo Orçamento
@@ -305,7 +328,7 @@ const Reports: React.FC = () => {
               return (
                 <div
                   key={report.id}
-                  className="bg-white rounded-lg border border-slate-200 p-6 hover:shadow-lg transition"
+                  className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:shadow-md"
                 >
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1 min-w-0">
@@ -352,11 +375,12 @@ const Reports: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <button
+                      type="button"
                       disabled={isGenerating}
                       onClick={() => handleGenerateReport(report)}
-                      className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white py-2 rounded-lg transition font-medium text-sm"
+                      className={`${btnAccent} min-h-[2.5rem] flex-1 py-2 text-sm disabled:opacity-60`}
                     >
                       {isGenerating ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -367,21 +391,24 @@ const Reports: React.FC = () => {
                     </button>
                     {report.uploadId && (
                       <button
+                        type="button"
                         onClick={() =>
                           navigate(`/analise-detalhada/${report.uploadId}`)
                         }
-                        className="flex-1 flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-lg transition font-medium text-sm"
+                        className={`${btnSecondary} min-h-[2.5rem] flex-1 py-2 text-sm`}
                       >
                         <Eye className="w-4 h-4" />
                         Ver análise
                       </button>
                     )}
                     <button
-                      onClick={() => handleDeleteReport(report.id)}
-                      className="flex items-center justify-center gap-2 bg-red-50 hover:bg-red-100 text-red-600 px-3 py-2 rounded-lg transition"
+                      type="button"
+                      onClick={() => setDeleteReportId(report.id)}
+                      className="inline-flex min-h-[2.5rem] items-center justify-center gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-red-700 transition hover:bg-red-100"
                       title="Remover da lista"
+                      aria-label="Remover relatório da lista"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
                 </div>
