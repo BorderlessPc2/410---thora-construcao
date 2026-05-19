@@ -1303,7 +1303,11 @@ async def process_orcamento_confirmed(
         except OpenAIServiceError as exc:
             logger.warning(f"Erro ao processar tabela {t_id}: {exc}")
             import traceback; traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Erro OpenAI na tabela {t_id}: {str(exc)}")
+            status = getattr(exc, "status_code", 500) or 500
+            raise HTTPException(
+                status_code=status,
+                detail=f"Erro OpenAI na tabela {t_id}: {str(exc)}",
+            )
         except Exception as exc:
             logger.warning(f"Erro inesperado ao processar tabela {t_id}: {exc}")
             import traceback; traceback.print_exc()

@@ -1,6 +1,137 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Table2, Eye, X } from "lucide-react";
 import { btnPrimary } from "./ui/buttonClasses";
+
+const PREVIEW_BASE_HEIGHT_REM = 8;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 0.12;
+
+function useWheelZoom(initialScale = 1) {
+  const [scale, setScale] = useState(initialScale);
+
+  /** Usado com addEventListener(..., { passive: false }) — o onWheel do React é passivo e não permite preventDefault. */
+  const applyWheelDelta = useCallback((delta: number) => {
+    setScale((s) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, s + delta)));
+  }, []);
+
+  const resetZoom = useCallback(() => setScale(1), []);
+
+  return { scale, applyWheelDelta, resetZoom };
+}
+
+const MODAL_PREVIEW_BASE_HEIGHT_REM = 36;
+
+interface ZoomableTableImageProps {
+  src: string;
+  alt: string;
+  /** Altura base em rem (prévia no card vs. modal) */
+  baseHeightRem: number;
+  containerClassName: string;
+  scale: number;
+  applyWheelDelta: (delta: number) => void;
+  onResetZoom?: () => void;
+}
+
+function ZoomableTableImage({
+  src,
+  alt,
+  baseHeightRem,
+  containerClassName,
+  scale,
+  applyWheelDelta,
+  onResetZoom,
+}: ZoomableTableImageProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const step = e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP;
+      applyWheelDelta(step);
+    };
+
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", handler);
+    };
+  }, [applyWheelDelta]);
+
+  return (
+    <div
+      ref={containerRef}
+      className={containerClassName}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        onResetZoom?.();
+      }}
+      role="region"
+      aria-label="Prévia da tabela — use a roda do mouse para ampliar ou reduzir; duplo clique redefine o zoom"
+    >
+      <div className="flex justify-center py-1">
+        <img
+          src={src}
+          alt={alt}
+          className="object-contain object-top select-none"
+          draggable={false}
+          style={{
+            height: `${baseHeightRem * scale}rem`,
+            width: "auto",
+            maxWidth: "none",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function TableCardPreviewImage({ base64, tableName }: { base64: string; tableName: string }) {
+  const { scale, applyWheelDelta, resetZoom } = useWheelZoom(1);
+  return (
+    <div className="mb-5 flex flex-1 flex-col">
+      <ZoomableTableImage
+        src={`data:image/png;base64,${base64}`}
+        alt={`Print da tabela ${tableName}`}
+        baseHeightRem={PREVIEW_BASE_HEIGHT_REM}
+        containerClassName="flex max-h-52 min-h-32 flex-1 justify-center overflow-auto rounded-lg border border-slate-100 bg-slate-50/80 p-2"
+        scale={scale}
+        applyWheelDelta={applyWheelDelta}
+        onResetZoom={resetZoom}
+      />
+      <p className="mt-1.5 text-center text-[10px] leading-tight text-slate-400">
+        Roda do mouse na prévia para zoom · duplo clique para redefinir
+      </p>
+    </div>
+  );
+}
+
+function ExpandedTableModalContent({ imageBase64 }: { imageBase64: string }) {
+  const { scale, applyWheelDelta, resetZoom } = useWheelZoom(1);
+  useEffect(() => {
+    resetZoom();
+  }, [imageBase64, resetZoom]);
+
+  return (
+    <>
+      <p className="mb-2 px-1 text-center text-xs text-slate-500">
+        Roda do mouse para zoom · duplo clique na imagem para redefinir
+      </p>
+      <ZoomableTableImage
+        src={`data:image/png;base64,${imageBase64}`}
+        alt="Visualização ampliada da tabela"
+        baseHeightRem={MODAL_PREVIEW_BASE_HEIGHT_REM}
+        containerClassName="max-h-[calc(90vh-5rem)] overflow-auto rounded bg-slate-50 p-2"
+        scale={scale}
+        applyWheelDelta={applyWheelDelta}
+        onResetZoom={resetZoom}
+      />
+    </>
+  );
+}
 
 export interface MockTableOption {
   id: string;
@@ -148,13 +279,7 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
               </div>
 
               {table.imagem_base64 ? (
-                <div className="mb-5 flex flex-1 justify-center rounded-lg border border-slate-100 bg-slate-50/80 p-2 overflow-hidden">
-                  <img
-                    src={`data:image/png;base64,${table.imagem_base64}`}
-                    alt={`Print da tabela ${table.name}`}
-                    className="max-h-32 object-contain"
-                  />
-                </div>
+                <TableCardPreviewImage base64={table.imagem_base64} tableName={table.name} />
               ) : (
                 <div
                   className="mb-5 flex min-h-18 flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
@@ -201,13 +326,7 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
             >
               <X className="h-5 w-5" />
             </button>
-            <div className="overflow-auto rounded bg-slate-50 p-2">
-              <img
-                src={`data:image/png;base64,${previewImage}`}
-                alt="Visualização ampliada da tabela"
-                className="max-h-[85vh] max-w-full object-contain"
-              />
-            </div>
+            <ExpandedTableModalContent imageBase64={previewImage} />
           </div>
         </div>
       )}

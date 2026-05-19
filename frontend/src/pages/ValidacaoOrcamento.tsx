@@ -52,6 +52,14 @@ interface ExtractedTable {
   rows: TableRow[][];
 }
 
+/** Recortes das tabelas escolhidas na tela anterior (mesmo payload do detect-tables). */
+interface SelectedTablePreview {
+  id: string;
+  name: string;
+  page: number;
+  imagem_base64?: string;
+}
+
 interface StructuredBudgetItem {
   item?: string | number;
   tipo?: string;
@@ -187,6 +195,20 @@ export default function ValidacaoOrcamento() {
   const [numPages, setNumPages] = useState<number>(0);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [scale, setScale] = useState<number>(1.0); // Zoom
+
+  const selectedTablePreviews = useMemo(() => {
+    const raw = (location.state as { selectedTablePreviews?: SelectedTablePreview[] } | null)
+      ?.selectedTablePreviews;
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (p) =>
+        p &&
+        typeof p.imagem_base64 === "string" &&
+        p.imagem_base64.trim().length > 0,
+    );
+  }, [location.state]);
+
+  const showSelectedTableImages = selectedTablePreviews.length > 0;
 
   // 1. Recuperar o arquivo e dados extraídos ao carregar a tela
   useEffect(() => {
@@ -632,18 +654,18 @@ export default function ValidacaoOrcamento() {
       <main className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         <div className="flex max-h-[42vh] min-h-0 w-full flex-col border-b border-slate-200 bg-slate-100 lg:max-h-none lg:w-5/12 lg:border-b-0 lg:border-r">
           {/* Toolbar do PDF */}
-          <div className="h-12 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-10">
-            <span className="text-xs font-semibold text-slate-500 uppercase">
-              PDF Original
+          <div className="h-12 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 z-10 gap-2">
+            <span className="text-xs font-semibold text-slate-500 uppercase shrink-0">
+              {showSelectedTableImages ? "Tabelas analisadas" : "PDF Original"}
             </span>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0 justify-center flex-1">
               <button
                 type="button"
                 onClick={() => setScale((s) => Math.max(0.5, s - 0.1))}
                 className="cursor-pointer rounded p-1.5 text-slate-600 hover:bg-slate-100"
                 title="Diminuir zoom"
-                aria-label="Diminuir zoom do PDF"
+                aria-label={showSelectedTableImages ? "Diminuir zoom das imagens" : "Diminuir zoom do PDF"}
               >
                 <ZoomOut className="h-4 w-4" />
               </button>
@@ -655,49 +677,84 @@ export default function ValidacaoOrcamento() {
                 onClick={() => setScale((s) => Math.min(2.0, s + 0.1))}
                 className="cursor-pointer rounded p-1.5 text-slate-600 hover:bg-slate-100"
                 title="Aumentar zoom"
-                aria-label="Aumentar zoom do PDF"
+                aria-label={showSelectedTableImages ? "Aumentar zoom das imagens" : "Aumentar zoom do PDF"}
               >
                 <ZoomIn className="h-4 w-4" />
               </button>
-              <div className="h-6 border-l border-slate-300"></div>
+              <div className="h-6 border-l border-slate-300 shrink-0" />
               <button
                 type="button"
-                onClick={() => setScale(0.8)}
-                className="cursor-pointer rounded px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                title="Ajustar à largura"
+                onClick={() => setScale(showSelectedTableImages ? 1 : 0.8)}
+                className="cursor-pointer rounded px-2 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 shrink-0"
+                title={showSelectedTableImages ? "Redefinir zoom (100%)" : "Ajustar à largura"}
               >
-                Ajustar
+                {showSelectedTableImages ? "100%" : "Ajustar"}
               </button>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
-                disabled={pageNumber <= 1}
-                className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
-                aria-label="Página anterior"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </button>
-              <span className="text-xs text-slate-600">
-                Pág {pageNumber} de {numPages || "--"}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
-                disabled={pageNumber >= numPages}
-                className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
-                aria-label="Próxima página"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </button>
+            <div className="flex items-center gap-2 shrink-0 justify-end">
+              {showSelectedTableImages ? (
+                <span className="text-xs text-slate-600 whitespace-nowrap">
+                  {selectedTablePreviews.length}{" "}
+                  {selectedTablePreviews.length === 1 ? "tabela" : "tabelas"}
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
+                    disabled={pageNumber <= 1}
+                    className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+                    aria-label="Página anterior"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-xs text-slate-600">
+                    Pág {pageNumber} de {numPages || "--"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
+                    disabled={pageNumber >= numPages}
+                    className="rounded p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30"
+                    aria-label="Próxima página"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Área de Renderização do PDF */}
+          {/* PDF completo ou apenas recortes das tabelas escolhidas */}
           <div className="flex-1 overflow-auto p-4 bg-slate-200/50">
-            {pdfFile ? (
+            {showSelectedTableImages ? (
+              <div className="mx-auto flex max-w-full flex-col gap-6">
+                {selectedTablePreviews.map((tbl) => (
+                  <figure
+                    key={tbl.id}
+                    className="overflow-hidden rounded-lg border border-slate-200 bg-white p-3 shadow-md"
+                  >
+                    <figcaption className="mb-2 text-xs font-medium text-slate-600">
+                      {tbl.name}
+                      <span className="font-normal text-slate-400">
+                        {" "}
+                        · Pág. {tbl.page}
+                      </span>
+                    </figcaption>
+                    <div className="overflow-x-auto rounded border border-slate-100 bg-slate-50">
+                      <img
+                        src={`data:image/png;base64,${tbl.imagem_base64}`}
+                        alt={`Recorte da tabela: ${tbl.name}`}
+                        className="mx-auto block h-auto max-w-none"
+                        style={{ width: `${Math.round(scale * 100)}%` }}
+                        draggable={false}
+                      />
+                    </div>
+                  </figure>
+                ))}
+              </div>
+            ) : pdfFile ? (
               <div className="flex items-start justify-start">
                 <Document
                   file={pdfFile}

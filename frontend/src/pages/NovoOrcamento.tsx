@@ -104,11 +104,21 @@ export default function NovoOrcamento() {
     try {
       // O backend agora suporta table_ids
       const result = await processOrcamentoConfirmed(uploadId, selectedTableIds);
+      const selectedTablePreviews = selectedTableIds
+        .map((id) => tableOptions.find((t) => t.id === id))
+        .filter((t): t is MockTableOption => Boolean(t))
+        .map((t) => ({
+          id: t.id,
+          name: t.name,
+          page: t.page,
+          imagem_base64: t.imagem_base64,
+        }));
       navigate(`/validacao/${uploadId}`, {
         state: {
           file,
           uploadId: result.upload_id ?? uploadId,
           selectedTableIds: selectedTableIds,
+          selectedTablePreviews,
           extractedData: result.tables ?? [],
           structuredData: {
             items: result.structured_items ?? result.items ?? [],

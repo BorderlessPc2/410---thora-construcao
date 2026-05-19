@@ -3,10 +3,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
+# .env na raiz do repo e em backend/ (não depender só do diretório de trabalho ao rodar `py main.py`)
+load_dotenv(BASE_DIR.parent / ".env")
+load_dotenv(BASE_DIR / ".env")
+load_dotenv()
 IS_VERCEL = os.getenv("VERCEL", "").strip().lower() in {"1", "true", "yes", "on"}
 RUNTIME_BASE_DIR = Path("/tmp") if IS_VERCEL else BASE_DIR
 UPLOAD_FOLDER = RUNTIME_BASE_DIR / "uploads"
