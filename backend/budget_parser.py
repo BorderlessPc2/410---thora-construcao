@@ -14,11 +14,19 @@ class BudgetParser:
     """Parser robusto para extração de dados de orçamentos"""
     
     # Palavras-chave para identificar colunas
-    DESCRICAO_KEYWORDS = ['descrição', 'descricao', 'description', 'descr', 'serviço', 'servico', 'material', 'especificação']
-    QUANTIDADE_KEYWORDS = ['qtd', 'quant', 'quantidade', 'quantity', 'qty']
-    UNIDADE_KEYWORDS = ['un', 'und', 'unid', 'unidade', 'unit', 'u.']
-    VALOR_KEYWORDS = ['valor', 'price', 'preço', 'preco', 'unitário', 'unitario', 'unit', 'v.unit']
-    TOTAL_KEYWORDS = ['total', 'v.total', 'valor total', 'amount']
+    DESCRICAO_KEYWORDS = [
+        'descrição', 'descricao', 'description', 'descr', 'serviço', 'servico',
+        'do serviço', 'do servico', 'material', 'especificação', 'especificacao',
+    ]
+    QUANTIDADE_KEYWORDS = ['qtd', 'quant', 'quantidade', 'quantity', 'qty', 'qtde']
+    UNIDADE_KEYWORDS = ['un', 'und', 'unid', 'unidade', 'unit', 'u.', 'unid.']
+    VALOR_KEYWORDS = [
+        'valor', 'price', 'preço', 'preco', 'unitário', 'unitario', 'unit', 'v.unit',
+        'preço unit', 'preco unit', 'p. unit', 'p.unit', 'valor unit',
+    ]
+    TOTAL_KEYWORDS = ['total', 'v.total', 'valor total', 'amount', 'preço total', 'preco total']
+    CODIGO_KEYWORDS = ['código', 'codigo', 'code', 'ref', 'referência', 'referencia']
+    BDI_KEYWORDS = ['bdi', '% bdi', 'encargos']
     
     # Palavras para ignorar (linhas de totalizações)
     IGNORE_KEYWORDS = ['total geral', 'subtotal', 'total:', 'suma', 'resumen', 'grand total']
@@ -70,17 +78,25 @@ class BudgetParser:
         # Conta quantas palavras-chave de cabeçalho aparecem
         keyword_count = 0
         all_keywords = (
-            self.DESCRICAO_KEYWORDS + 
-            self.QUANTIDADE_KEYWORDS + 
-            self.UNIDADE_KEYWORDS + 
-            self.VALOR_KEYWORDS
+            self.DESCRICAO_KEYWORDS
+            + self.QUANTIDADE_KEYWORDS
+            + self.UNIDADE_KEYWORDS
+            + self.VALOR_KEYWORDS
+            + self.CODIGO_KEYWORDS
+            + self.BDI_KEYWORDS
         )
-        
+
         for keyword in all_keywords:
             if keyword in row_text:
                 keyword_count += 1
-        
-        # Se tem 2+ palavras-chave, provavelmente é cabeçalho
+
+        has_codigo = any(k in row_text for k in self.CODIGO_KEYWORDS)
+        has_qtd = any(k in row_text for k in self.QUANTIDADE_KEYWORDS)
+        has_desc = any(k in row_text for k in self.DESCRICAO_KEYWORDS)
+        has_val = any(k in row_text for k in self.VALOR_KEYWORDS)
+
+        if has_codigo and (has_qtd or has_desc or has_val):
+            return True
         return keyword_count >= 2
     
     def should_ignore_row(self, row: List[Any]) -> bool:
@@ -107,17 +123,30 @@ class BudgetParser:
     def identify_columns(self, header_row: List[Any]) -> Dict[str, int]:
         """Identifica os índices das colunas importantes"""
         structure = {
+            'codigo': -1,
             'descricao': -1,
             'quantidade': -1,
             'unidade': -1,
             'valor_unitario': -1,
-            'valor_total': -1
+            'valor_total': -1,
+            'bdi': -1,
         }
-        
+
         for idx, cell in enumerate(header_row):
             cell_lower = str(cell).lower().strip()
             
-            # Verificar cada tipo de coluna
+            if structure['codigo'] == -1:
+                for keyword in self.CODIGO_KEYWORDS:
+                    if keyword in cell_lower:
+                        structure['codigo'] = idx
+                        break
+
+            if structure['bdi'] == -1:
+                for keyword in self.BDI_KEYWORDS:
+                    if keyword in cell_lower:
+                        structure['bdi'] = idx
+                        break
+
             if structure['descricao'] == -1:
                 for keyword in self.DESCRICAO_KEYWORDS:
                     if keyword in cell_lower:
@@ -214,13 +243,12 @@ class BudgetParser:
         if not rows or len(rows) < 2:
             return items, structure
         
-        # 1. Tentar identificar cabeçalho - procurar mais linhas (até 10)
+        # 1. Tentar identificar cabeçalho - procurar nas primeiras linhas
         header_idx = -1
-        for idx, row in enumerate(rows[:10]):
+        for idx, row in enumerate(rows[:25]):
             if self.is_header_row(row):
                 structure = self.identify_columns(row)
-                # Verificar se realmente encontrou colunas importantes
-                if structure.get('descricao', -1) != -1:
+                if structure.get('descricao', -1) != -1 or structure.get('codigo', -1) != -1:
                     header_idx = idx
                     logger.info(f"📋 Cabeçalho detectado na linha {idx}: {structure}")
                     break
@@ -232,8 +260,8 @@ class BudgetParser:
             header_idx = 0
         
         # 3. Verificar se estrutura é válida
-        if structure.get('descricao', -1) == -1:
-            logger.warning("⚠️ Não foi possível identificar coluna de descrição")
+        if structure.get('descricao', -1) == -1 and structure.get('codigo', -1) == -1:
+            logger.warning("⚠️ Não foi possível identificar colunas de descrição/código")
             return items, structure
         
         # 4. Extrair itens
@@ -243,26 +271,37 @@ class BudgetParser:
             
             try:
                 # Extrair valores
-                descricao = str(row[structure['descricao']]).strip() if structure['descricao'] >= 0 else ""
+                codigo = ""
+                if structure.get('codigo', -1) >= 0 and structure['codigo'] < len(row):
+                    codigo = str(row[structure['codigo']]).strip()
+
+                if structure.get('descricao', -1) >= 0 and structure['descricao'] < len(row):
+                    descricao = str(row[structure['descricao']]).strip()
+                else:
+                    descricao = ""
+                if not descricao and codigo:
+                    descricao = codigo
+                elif descricao and codigo and codigo not in descricao:
+                    descricao = f"{codigo} — {descricao}"
+
                 quantidade = self.parse_number(row[structure['quantidade']]) if structure['quantidade'] >= 0 and structure['quantidade'] < len(row) else 0
                 unidade = str(row[structure['unidade']]).strip() if structure['unidade'] >= 0 and structure['unidade'] < len(row) else "un"
                 valor_unitario = self.parse_number(row[structure['valor_unitario']]) if structure['valor_unitario'] >= 0 and structure['valor_unitario'] < len(row) else 0
-                
-                # Calcular ou extrair valor total
+
                 if structure['valor_total'] >= 0 and structure['valor_total'] < len(row):
                     valor_total = self.parse_number(row[structure['valor_total']])
                 else:
                     valor_total = quantidade * valor_unitario
-                
-                # Validar item
+
                 if not descricao or len(descricao) < 3:
                     continue
-                
+
                 if quantidade <= 0 and valor_unitario <= 0 and valor_total <= 0:
                     continue
-                
+
                 items.append({
                     'id': f'item_{page}_{idx}',
+                    'codigo': codigo,
                     'descricao': descricao,
                     'quantidade': quantidade,
                     'unidade': unidade or 'un',

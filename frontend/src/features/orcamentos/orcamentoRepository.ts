@@ -53,6 +53,12 @@ const mapOrcamentoDoc = (
     userId: String(data.userId ?? ""),
     uploadId: String(data.uploadId ?? snap.id),
     filename: String(data.filename ?? "—"),
+    nomeProjeto:
+      typeof data.nomeProjeto === "string" ? data.nomeProjeto : undefined,
+    modelosSelecionados:
+      data.modelosSelecionados && typeof data.modelosSelecionados === "object"
+        ? (data.modelosSelecionados as Orcamento["modelosSelecionados"])
+        : undefined,
     uploadedAt,
     extractedAt,
     updatedAt,

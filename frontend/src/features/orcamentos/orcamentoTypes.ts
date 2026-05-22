@@ -1,3 +1,5 @@
+import type { OutputModelsSelection } from "./outputModels";
+
 export type OrcamentoStatus = "processing" | "completed" | "error";
 
 export type OrcamentoItem = {
@@ -24,6 +26,8 @@ export type Orcamento = {
   userId: string;
   uploadId: string;
   filename: string;
+  nomeProjeto?: string;
+  modelosSelecionados?: OutputModelsSelection;
   uploadedAt: Date;
   extractedAt?: Date;
   items: OrcamentoItem[];

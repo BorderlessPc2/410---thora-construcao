@@ -3,6 +3,7 @@ import { Table2, Eye, X } from "lucide-react";
 import { btnPrimary } from "./ui/buttonClasses";
 
 const PREVIEW_BASE_HEIGHT_REM = 8;
+const PREVIEW_BASE_HEIGHT_LARGE_REM = 26;
 const ZOOM_MIN = 0.6;
 const ZOOM_MAX = 4;
 const ZOOM_STEP = 0.12;
@@ -89,20 +90,36 @@ function ZoomableTableImage({
   );
 }
 
-function TableCardPreviewImage({ base64, tableName }: { base64: string; tableName: string }) {
+function TableCardPreviewImage({
+  base64,
+  tableName,
+  large = false,
+}: {
+  base64: string;
+  tableName: string;
+  large?: boolean;
+}) {
   const { scale, applyWheelDelta, resetZoom } = useWheelZoom(1);
   return (
-    <div className="mb-5 flex flex-1 flex-col">
+    <div className={`flex flex-1 flex-col ${large ? "mb-2" : "mb-5"}`}>
       <ZoomableTableImage
         src={`data:image/png;base64,${base64}`}
         alt={`Print da tabela ${tableName}`}
-        baseHeightRem={PREVIEW_BASE_HEIGHT_REM}
-        containerClassName="flex max-h-52 min-h-32 flex-1 justify-center overflow-auto rounded-lg border border-slate-100 bg-slate-50/80 p-2"
+        baseHeightRem={large ? PREVIEW_BASE_HEIGHT_LARGE_REM : PREVIEW_BASE_HEIGHT_REM}
+        containerClassName={
+          large
+            ? "flex min-h-88 max-h-[32rem] flex-1 justify-center overflow-auto rounded-xl border border-slate-200 bg-slate-50 p-3"
+            : "flex max-h-52 min-h-32 flex-1 justify-center overflow-auto rounded-lg border border-slate-100 bg-slate-50/80 p-2"
+        }
         scale={scale}
         applyWheelDelta={applyWheelDelta}
         onResetZoom={resetZoom}
       />
-      <p className="mt-1.5 text-center text-[10px] leading-tight text-slate-400">
+      <p
+        className={`mt-2 text-center leading-tight text-slate-400 ${
+          large ? "text-xs" : "text-[10px]"
+        }`}
+      >
         Roda do mouse na prévia para zoom · duplo clique para redefinir
       </p>
     </div>
@@ -146,29 +163,28 @@ interface TableSelectorProps {
   loading: boolean;
   disabled?: boolean;
   selectedIds?: string[];
+  layout?: "default" | "large";
+  confirmLabel?: string;
   onSelect: (table: MockTableOption) => void;
   onConfirm?: () => void;
 }
 
-function TableCardSkeleton() {
+function TableCardSkeleton({ large = false }: { large?: boolean }) {
   return (
     <div
-      className="animate-pulse rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+      className={`animate-pulse rounded-2xl border border-slate-200 bg-white shadow-sm ${
+        large ? "p-6 sm:p-8" : "p-5"
+      }`}
       aria-hidden="true"
     >
-      <div className="mb-4 flex items-center gap-3">
-        <div className="h-12 w-12 shrink-0 rounded-lg bg-slate-200" />
+      <div className="mb-5 flex items-center gap-4">
+        <div className={`shrink-0 rounded-xl bg-slate-200 ${large ? "h-14 w-14" : "h-12 w-12"}`} />
         <div className="flex-1 space-y-2">
-          <div className="h-4 w-[85%] rounded bg-slate-200" />
-          <div className="h-3 w-20 rounded bg-slate-100" />
+          <div className={`rounded bg-slate-200 ${large ? "h-5 w-[70%]" : "h-4 w-[85%]"}`} />
+          <div className="h-3 w-24 rounded bg-slate-100" />
         </div>
       </div>
-      <div className="space-y-2">
-        <div className="h-3 w-full rounded bg-slate-100" />
-        <div className="h-3 w-[90%] rounded bg-slate-100" />
-        <div className="h-3 w-[70%] rounded bg-slate-100" />
-      </div>
-      <div className="mt-5 h-10 w-full rounded-lg bg-slate-200" />
+      <div className={`rounded-xl bg-slate-100 ${large ? "min-h-88" : "h-32"}`} />
     </div>
   );
 }
@@ -178,9 +194,12 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   loading,
   disabled = false,
   selectedIds = [],
+  layout = "default",
+  confirmLabel = "Processar com IA",
   onSelect,
   onConfirm,
 }) => {
+  const isLarge = layout === "large";
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -200,24 +219,26 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
   if (loading) {
     return (
       <div
-        className="mt-8 grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        className={`grid w-full grid-cols-1 ${
+          isLarge ? "gap-8 lg:grid-cols-2" : "mt-8 max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        }`}
         role="status"
         aria-label="Analisando documento em busca de tabelas"
       >
         <span className="sr-only">Carregando opções de tabelas…</span>
-        <TableCardSkeleton />
-        <TableCardSkeleton />
-        <TableCardSkeleton />
+        <TableCardSkeleton large={isLarge} />
+        <TableCardSkeleton large={isLarge} />
+        <TableCardSkeleton large={isLarge} />
       </div>
     );
   }
 
   return (
-    <div className="w-full max-w-5xl">
+    <div className="w-full">
       <div
-        className={`mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 ${
-          disabled ? "pointer-events-none opacity-60" : ""
-        }`}
+        className={`grid w-full grid-cols-1 ${
+          isLarge ? "gap-8 lg:grid-cols-2" : "mt-8 max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-3"
+        } ${disabled ? "pointer-events-none opacity-60" : ""}`}
         role="list"
         aria-label="Tabelas detectadas no documento"
         aria-busy={disabled}
@@ -228,34 +249,44 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
             <article
               key={table.id}
               role="listitem"
-              className={`flex flex-col rounded-2xl border p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md cursor-pointer ${
+              className={`flex cursor-pointer flex-col rounded-2xl border shadow-sm transition hover:border-slate-300 hover:shadow-lg ${
+                isLarge ? "p-6 sm:p-8" : "p-5"
+              } ${
                 isSelected
-                  ? "border-blue-500 bg-blue-50/60 ring-1 ring-blue-500"
+                  ? "border-blue-500 bg-blue-50/60 ring-2 ring-blue-400/80"
                   : "border-slate-200 bg-white"
               }`}
               onClick={() => onSelect(table)}
               aria-labelledby={`table-name-${table.id}`}
               aria-label={`Card de tabela: ${table.name}, página ${table.page}`}
             >
-              <div className="mb-4 flex items-start gap-3">
+              <div className={`flex items-start gap-4 ${isLarge ? "mb-5" : "mb-4"}`}>
                 <div
-                  className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50"
+                  className={`flex shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 ${
+                    isLarge ? "h-14 w-14" : "h-12 w-12"
+                  }`}
                   aria-hidden="true"
                 >
-                  <Table2 className="h-6 w-6 text-slate-600" />
+                  <Table2 className={isLarge ? "h-7 w-7" : "h-6 w-6"} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <h3
                     id={`table-name-${table.id}`}
-                    className="font-semibold leading-snug text-slate-900"
+                    className={`font-semibold leading-snug text-slate-900 ${
+                      isLarge ? "text-lg" : ""
+                    }`}
                   >
                     {table.name}
                   </h3>
-                  <p className="mt-1 text-xs font-medium uppercase tracking-wide text-slate-500">
+                  <p
+                    className={`mt-1 font-medium uppercase tracking-wide text-slate-500 ${
+                      isLarge ? "text-sm" : "text-xs"
+                    }`}
+                  >
                     Página {table.page}
                   </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 items-center gap-3">
                   {table.imagem_base64 && (
                     <button
                       type="button"
@@ -263,29 +294,41 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
                         e.stopPropagation();
                         setPreviewImage(table.imagem_base64!);
                       }}
-                      className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition"
-                      aria-label="Visualizar tabela ampliada"
+                      className={`rounded-full text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 ${
+                        isLarge ? "p-2.5" : "p-1.5"
+                      }`}
+                      aria-label="Visualizar tabela em tela cheia"
                     >
-                      <Eye className="h-5 w-5" />
+                      <Eye className={isLarge ? "h-6 w-6" : "h-5 w-5"} />
                     </button>
                   )}
                   <input
                     type="checkbox"
                     checked={isSelected}
                     readOnly
-                    className="h-5 w-5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
+                    className={`cursor-pointer rounded border-slate-300 text-blue-600 focus:ring-blue-500 ${
+                      isLarge ? "h-6 w-6" : "h-5 w-5"
+                    }`}
                   />
                 </div>
               </div>
 
               {table.imagem_base64 ? (
-                <TableCardPreviewImage base64={table.imagem_base64} tableName={table.name} />
+                <TableCardPreviewImage
+                  base64={table.imagem_base64}
+                  tableName={table.name}
+                  large={isLarge}
+                />
               ) : (
                 <div
-                  className="mb-5 flex min-h-18 flex-1 rounded-lg border border-slate-100 bg-slate-50/80 p-3 font-mono text-xs leading-relaxed text-slate-600"
+                  className={`flex flex-1 rounded-xl border border-slate-100 bg-slate-50/80 font-mono leading-relaxed text-slate-600 ${
+                    isLarge
+                      ? "min-h-72 p-5 text-sm"
+                      : "mb-5 min-h-18 p-3 text-xs"
+                  }`}
                   aria-label={`Prévia do conteúdo: ${table.preview}`}
                 >
-                  <p className="line-clamp-4">{table.preview}</p>
+                  <p className={isLarge ? "line-clamp-12" : "line-clamp-4"}>{table.preview}</p>
                 </div>
               )}
             </article>
@@ -294,14 +337,26 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
       </div>
       
       {onConfirm && tables.length > 0 && (
-        <div className="mt-6 flex justify-end">
+        <div
+          className={`flex flex-col gap-3 border-t border-slate-200 sm:flex-row sm:items-center sm:justify-between ${
+            isLarge ? "mt-10 pt-8" : "mt-6"
+          }`}
+        >
+          <p className="text-sm text-slate-600">
+            {selectedIds.length === 0
+              ? "Selecione ao menos uma tabela para continuar."
+              : `${selectedIds.length} tabela(s) selecionada(s)`}
+          </p>
           <button
             type="button"
-            className={`${btnPrimary} px-8 py-3 text-sm font-semibold shadow-sm`}
+            className={`${btnPrimary} px-8 py-3.5 text-base font-semibold shadow-sm sm:shrink-0`}
             onClick={onConfirm}
             disabled={disabled || selectedIds.length === 0}
           >
-            Processar {selectedIds.length} tabela{selectedIds.length !== 1 ? 's' : ''} com IA
+            {confirmLabel}
+            {selectedIds.length > 0
+              ? ` (${selectedIds.length})`
+              : ""}
           </button>
         </div>
       )}

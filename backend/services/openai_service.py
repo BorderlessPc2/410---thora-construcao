@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 import time
 from io import BytesIO
@@ -16,7 +17,12 @@ from typing import Any, Dict, List, Tuple
 import pdfplumber
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, BadRequestError, OpenAIError, RateLimitError
 
-from config import OPENAI_API_KEY, OPENAI_ORCAMENTO_MODEL, OPENAI_ORCAMENTO_TIMEOUT_SECONDS
+from config import (
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+    OPENAI_ORCAMENTO_MODEL,
+    OPENAI_ORCAMENTO_TIMEOUT_SECONDS,
+)
 
 from .ai_audit_logger import log_ai_exchange, truncate_rows_for_audit
 
@@ -572,6 +578,64 @@ async def process_selected_table(
             raise ValueError(f"Falha ao decodificar o JSON retornado pela OpenAI: {e}")
         raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
         normalized_items = _normalize_structured_items(raw_items)
+        if not normalized_items and raw_content:
+            logger.warning(
+                "OpenAI retornou 0 itens úteis para %s (pág %s). raw_chars=%s snippet=%s",
+                table_id,
+                table_page,
+                len(raw_content),
+                raw_content[:200],
+            )
+
+        if not normalized_items and table_image_base64:
+            try:
+                full_page_b64 = _pdf_page_to_base64_image(pdf_content, table_page)
+                logger.info(
+                    "Retentando %s (pág %s) com imagem da página inteira após crop vazio",
+                    table_id,
+                    table_page,
+                )
+                retry_response = await client.chat.completions.create(
+                    model="gpt-4o-2024-08-06",
+                    temperature=0.0,
+                    max_tokens=8192,
+                    response_format={"type": "json_schema", "json_schema": EXTRACTION_JSON_SCHEMA},
+                    messages=[
+                        {"role": "system", "content": system_msg},
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        f"{EXTRACTION_USER_PROMPT_HEADER}\n\n"
+                                        f"CONTEXTO DE TEXTO EXTRAÍDO:\n{user_msg}"
+                                    ),
+                                },
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{full_page_b64}",
+                                        "detail": "high",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                )
+                retry_raw = retry_response.choices[0].message.content or "{}"
+                if retry_raw.startswith("```"):
+                    retry_raw = retry_raw.strip("`").removeprefix("json").strip()
+                retry_parsed = json.loads(retry_raw)
+                retry_items = retry_parsed.get("orcamento_itens") if isinstance(retry_parsed, dict) else []
+                normalized_items = _normalize_structured_items(retry_items)
+                if normalized_items:
+                    parsed = retry_parsed
+                    raw_content = retry_raw
+                    duration_ms = (time.perf_counter() - t0) * 1000
+            except Exception as retry_exc:
+                logger.warning("Retry página inteira falhou para %s: %s", table_id, retry_exc)
+
         summary = parsed.get("resumo") if isinstance(parsed, dict) else {}
         if not isinstance(summary, dict):
             summary = _build_summary(normalized_items, OPENAI_ORCAMENTO_MODEL)
@@ -651,3 +715,288 @@ async def process_selected_table(
         print("OPENAI PARSE/RESPONSE ERROR:", exc)
         import traceback; traceback.print_exc()
         raise OpenAIServiceError(f"A OpenAI retornou uma resposta inválida: {exc}", status_code=502, code="invalid_response") from exc
+
+
+# ---------------------------------------------------------------------------
+# Relatórios — chat multi-turno (ChatGPT style)
+# ---------------------------------------------------------------------------
+
+REPORT_CHAT_MODEL = os.getenv("OPENAI_REPORT_MODEL", OPENAI_MODEL)
+_MAX_REPORT_HISTORY = 24
+
+REPORT_CHAT_JSON_SCHEMA = {
+    "name": "report_chat_response",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "reply": {
+                "type": "string",
+                "description": "Resposta em Markdown (GFM): tabelas, listas, negrito, código.",
+            },
+            "chart": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": ["none", "bar", "pie"],
+                        "description": "Use 'none' quando não houver gráfico.",
+                    },
+                    "title": {"type": "string"},
+                    "value_label": {
+                        "type": "string",
+                        "enum": ["valor", "quantidade", "percentual"],
+                    },
+                    "data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string"},
+                                "value": {"type": "number"},
+                            },
+                            "required": ["name", "value"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                "required": ["type", "title", "value_label", "data"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["reply", "chart"],
+        "additionalProperties": False,
+    },
+}
+
+REPORT_CHAT_SYSTEM_TEMPLATE = """Você é um Engenheiro de Custos Sênior e Analista de Dados especializado em orçamentos de obras públicas e privadas no Brasil.
+
+CONTEXTO DO ORÇAMENTO (JSON validado — fonte única da verdade; NUNCA invente itens ou valores):
+{budget_json}
+
+RESUMO CURVA ABC:
+{abc_summary}
+
+REGRAS OBRIGATÓRIAS:
+1. Responda SOMENTE com base nos dados do JSON acima.
+2. O campo "reply" deve usar Markdown com GitHub Flavored Markdown (tabelas com | col |, listas, **negrito**).
+3. Quando o usuário pedir TABELA, use OBRIGATORIAMENTE tabela Markdown GFM no campo "reply", com cabeçalho e linha separadora. Exemplo:
+| # | Descrição | Qtd. | Valor total |
+|---:|---|---:|---:|
+| 1 | Serviço X | 10,00 | R$ 150.000,00 |
+Nunca substitua tabela por lista numerada quando pedirem "tabela".
+4. Respeite a quantidade pedida (ex: "5 itens" → exatamente 5 linhas na tabela).
+5. Preencha "chart" APENAS se o usuário pedir gráfico/visualização OU se um gráfico facilitar muito a resposta; caso contrário use type "none", title "", value_label "valor" e data [].
+6. Em "chart": type "bar", "pie" ou "none"; data com até 15 pontos; "value" em REAIS quando value_label for "valor" (use valor_total_calculado), NUNCA percentual acumulado 0-100 no eixo de valor.
+7. Quando houver gráfico, o campo "reply" deve trazer análise textual completa (2+ parágrafos), insights e tabela Markdown quando fizer sentido — o PDF exporta texto + gráfico juntos.
+8. value_label: "quantidade" só para gráficos de quantidade; "percentual" só se o usuário pedir % explicitamente; caso contrário "valor".
+9. Mantenha coerência com o histórico da conversa (perguntas anteriores do usuário).
+10. Não responda assuntos fora deste orçamento/PDF.
+11. Responda sempre em português do Brasil."""
+
+
+def _build_abc_summary(items: List[Dict[str, Any]]) -> str:
+    totals = {"A": 0.0, "B": 0.0, "C": 0.0}
+    counts = {"A": 0, "B": 0, "C": 0}
+    for item in items:
+        cls = str(item.get("classification") or item.get("classificacao") or "").upper()
+        if cls not in totals:
+            continue
+        val = float(item.get("valor_total_calculado") or item.get("lineTotal") or item.get("valor_total") or 0)
+        totals[cls] += val
+        counts[cls] += 1
+    grand = sum(totals.values()) or 1.0
+    lines = []
+    for cls in ("A", "B", "C"):
+        pct = totals[cls] / grand * 100.0
+        lines.append(f"- Classe {cls}: {counts[cls]} itens, R$ {totals[cls]:,.2f} ({pct:.1f}% do total)")
+    return "\n".join(lines) if lines else "Classificação ABC não disponível."
+
+
+def _normalize_report_chart(raw_chart: Any) -> Dict[str, Any] | None:
+    if raw_chart is None:
+        return None
+    if not isinstance(raw_chart, dict):
+        return None
+    chart_type_raw = str(raw_chart.get("type") or raw_chart.get("chart_type") or "").lower()
+    if chart_type_raw in ("none", "null", ""):
+        return None
+    data = raw_chart.get("data") or []
+    if not isinstance(data, list) or not data:
+        return None
+    normalized = []
+    for row in data[:15]:
+        if not isinstance(row, dict):
+            continue
+        normalized.append(
+            {
+                "name": str(row.get("name") or row.get("label") or "-")[:55],
+                "value": float(row.get("value") or row.get("valor") or 0),
+            }
+        )
+    if not normalized:
+        return None
+    chart_type = str(raw_chart.get("type") or raw_chart.get("chart_type") or "bar").lower()
+    if chart_type not in ("bar", "pie"):
+        chart_type = "bar"
+    return {
+        "type": chart_type,
+        "chart_type": "horizontal_bar" if chart_type == "bar" else "pie",
+        "title": str(raw_chart.get("title") or "Gráfico"),
+        "value_label": str(raw_chart.get("value_label") or "valor"),
+        "data": normalized,
+    }
+
+
+async def generate_report_chat(
+    conversation: List[Dict[str, str]],
+    budget_context: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str]:
+    """
+    Chat multi-turno com structured output.
+    conversation: [{"role": "user"|"assistant", "content": "..."}]
+    budget_context: orçamento completo + metadados
+    """
+    if not OPENAI_API_KEY:
+        raise OpenAIServiceError(
+            "OPENAI_API_KEY não configurada.",
+            status_code=503,
+            code="missing_api_key",
+        )
+
+    items = budget_context.get("itens") or []
+    abc_summary = _build_abc_summary(items if isinstance(items, list) else [])
+    budget_json = json.dumps(budget_context, ensure_ascii=False, default=str)
+    if len(budget_json) > 120_000:
+        budget_json = json.dumps(
+            {**budget_context, "itens": (items[:180] if isinstance(items, list) else [])},
+            ensure_ascii=False,
+            default=str,
+        )
+
+    system_content = REPORT_CHAT_SYSTEM_TEMPLATE.format(
+        budget_json=budget_json,
+        abc_summary=abc_summary,
+    )
+
+    api_messages: List[Dict[str, str]] = [{"role": "system", "content": system_content}]
+    for msg in conversation[-_MAX_REPORT_HISTORY:]:
+        role = str(msg.get("role") or "user").lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        api_messages.append({"role": role, "content": content})
+
+    if not any(m["role"] == "user" for m in api_messages):
+        raise OpenAIServiceError("Nenhuma mensagem do usuário na conversa.", status_code=400)
+
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_ORCAMENTO_TIMEOUT_SECONDS)
+    t0 = time.perf_counter()
+    input_audit = {
+        "messages_count": len(api_messages),
+        "budget_items": len(items) if isinstance(items, list) else 0,
+    }
+
+    json_object_hint = (
+        '\n\nFORMATO DE SAÍDA (JSON único, sem markdown externo): '
+        '{"reply": "<markdown>", "chart": {"type": "none|bar|pie", "title": "...", '
+        '"value_label": "valor|quantidade|percentual", "data": [{"name": "...", "value": 0}]}}'
+    )
+    attempts: List[Tuple[str, Dict[str, Any] | None]] = [
+        ("json_schema", {"type": "json_schema", "json_schema": REPORT_CHAT_JSON_SCHEMA}),
+        ("json_object", {"type": "json_object"}),
+    ]
+    last_bad_request: BadRequestError | None = None
+    parsed: Dict[str, Any] | None = None
+    model_used = REPORT_CHAT_MODEL
+
+    try:
+        for fmt_name, response_format in attempts:
+            messages = api_messages
+            if fmt_name == "json_object":
+                messages = [
+                    {
+                        **api_messages[0],
+                        "content": api_messages[0]["content"] + json_object_hint,
+                    },
+                    *api_messages[1:],
+                ]
+            try:
+                response = await client.chat.completions.create(
+                    model=REPORT_CHAT_MODEL,
+                    temperature=0.2,
+                    max_tokens=4096,
+                    response_format=response_format,
+                    messages=messages,
+                )
+            except BadRequestError as exc:
+                last_bad_request = exc
+                logger.warning(
+                    "OpenAI report chat %s falhou (model=%s): %s",
+                    fmt_name,
+                    REPORT_CHAT_MODEL,
+                    exc,
+                )
+                if fmt_name == "json_schema":
+                    continue
+                raise OpenAIServiceError(
+                    f"OpenAI rejeitou a requisição: {exc}",
+                    status_code=400,
+                    code="bad_request",
+                ) from exc
+
+            raw_content = response.choices[0].message.content or "{}"
+            if raw_content.startswith("```"):
+                raw_content = raw_content.strip("`").removeprefix("json").strip()
+            candidate = json.loads(raw_content)
+            if not isinstance(candidate, dict):
+                raise ValueError("Resposta não é objeto JSON")
+            parsed = candidate
+            break
+
+        if parsed is None:
+            raise last_bad_request or ValueError("Nenhuma resposta da OpenAI")
+
+        duration_ms = (time.perf_counter() - t0) * 1000
+        chart = _normalize_report_chart(parsed.get("chart"))
+        result = {
+            "reply": str(parsed.get("reply") or "").strip(),
+            "chart": chart,
+            "response_type": "mixed" if chart else "text",
+        }
+
+        log_ai_exchange(
+            operation="generate_report_chat",
+            provider="openai",
+            model=model_used,
+            input_payload=input_audit,
+            output_payload={
+                "reply_chars": len(result["reply"]),
+                "has_chart": chart is not None,
+            },
+            duration_ms=duration_ms,
+        )
+        return result, f"openai:{model_used}"
+
+    except OpenAIServiceError:
+        raise
+    except RateLimitError as exc:
+        raise OpenAIServiceError(
+            "Limite de requisições da OpenAI atingido.",
+            status_code=429,
+            code="rate_limit",
+        ) from exc
+    except (APIConnectionError, APITimeoutError) as exc:
+        raise OpenAIServiceError(
+            "Falha de conexão com a OpenAI.",
+            status_code=503,
+            code="connection_error",
+        ) from exc
+    except (json.JSONDecodeError, OpenAIError, ValueError) as exc:
+        raise OpenAIServiceError(
+            f"Resposta inválida da OpenAI: {exc}",
+            status_code=502,
+            code="invalid_response",
+        ) from exc

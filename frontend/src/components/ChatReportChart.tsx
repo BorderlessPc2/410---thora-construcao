@@ -100,10 +100,15 @@ const ChatReportChart: React.FC<ChatReportChartProps> = ({ chart }) => {
     return mapped;
   }, [rawData]);
 
-  const horizontal = shouldUseHorizontalLayout(chart.chart_type, rawData);
-  const chartHeight = horizontal
-    ? Math.min(420, Math.max(240, rows.length * 40 + 56))
-    : Math.min(360, Math.max(260, 280));
+  const isPie =
+    chart.chart_type === "pie" || chart.type === "pie";
+  const horizontal =
+    !isPie && shouldUseHorizontalLayout(chart.chart_type, rawData);
+  const chartHeight = isPie
+    ? 300
+    : horizontal
+      ? Math.min(420, Math.max(240, rows.length * 40 + 56))
+      : Math.min(360, Math.max(260, 280));
 
   if (!rows.length) {
     return (
@@ -122,7 +127,7 @@ const ChatReportChart: React.FC<ChatReportChartProps> = ({ chart }) => {
       </div>
 
       <div className="px-2 py-3 sm:px-4" style={{ height: chartHeight }}>
-        {chart.chart_type === "pie" ? (
+        {isPie ? (
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie

@@ -40,7 +40,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
   const asideWidth = sidebarOpen ? "w-64" : "w-20";
 
   return (
-    <div className="flex h-screen bg-slate-50">
+    <div className="flex h-dvh max-h-dvh w-full overflow-hidden bg-slate-50">
       {mobileNavOpen && (
         <button
           type="button"
@@ -142,7 +142,9 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
           <span className="font-semibold text-slate-900">Thora</span>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">{children}</div>
+        <main className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain">
+          {children}
+        </main>
       </div>
     </div>
   );

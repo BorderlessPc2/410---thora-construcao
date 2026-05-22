@@ -71,4 +71,5 @@ urllib3==2.6.3
 camelot-py[cv]
 PyMuPDF
 opencv-python-headless
+fpdf2>=2.8.0
 

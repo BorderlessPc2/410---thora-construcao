@@ -1,5 +1,9 @@
 import axios from "axios";
 import {
+  DEFAULT_OUTPUT_MODELS,
+  type OutputModelsSelection,
+} from "../features/orcamentos/outputModels";
+import {
   saveOrcamento,
   getOrcamentoByUploadId,
   getAllOrcamentos,
@@ -151,6 +155,7 @@ export const detectOrcamentoTables = async (uploadId: string) => {
         imagem_base64?: string;
       }[];
       mock_fallback?: boolean;
+      recommended_table_ids?: string[];
     };
   } catch (error: any) {
     const detail = error.response?.data?.detail;
@@ -286,20 +291,43 @@ export const getCurvaABC = async (uploadId: string) => {
 
 // ==================== EXPORT OPERATIONS ====================
 
-// Exportar planilha para XLSX
-export const exportToXLSX = async (items: any[]) => {
+export type ExportXlsxPayload = {
+  items: unknown[];
+  modelos_selecionados: OutputModelsSelection;
+  nome_projeto?: string;
+};
+
+// Exportar planilha para XLSX (abas conforme modelos selecionados)
+export const exportToXLSX = async (
+  items: unknown[],
+  options?: {
+    modelosSelecionados?: OutputModelsSelection;
+    nomeProjeto?: string;
+  },
+) => {
   try {
-    const response = await apiClient.post("/api/export-xlsx", items, {
+    const payload: ExportXlsxPayload = {
+      items,
+      modelos_selecionados: options?.modelosSelecionados ?? DEFAULT_OUTPUT_MODELS,
+      nome_projeto: options?.nomeProjeto,
+    };
+
+    const response = await apiClient.post("/api/export-xlsx", payload, {
       responseType: "blob",
     });
 
-    // Criar URL temporária e fazer download
+    const safeName = (options?.nomeProjeto || "orcamento")
+      .replace(/[^\w\s-áàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ]/g, "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .slice(0, 40) || "orcamento";
+
     const url = window.URL.createObjectURL(new Blob([response.data]));
     const link = document.createElement("a");
     link.href = url;
     link.setAttribute(
       "download",
-      `orcamento_${new Date().toISOString().split("T")[0]}.xlsx`
+      `${safeName}_${new Date().toISOString().split("T")[0]}.xlsx`,
     );
     document.body.appendChild(link);
     link.click();
@@ -366,9 +394,16 @@ export type AiReportChartPoint = { name: string; value: number };
 
 export type AiReportChart = {
   title: string;
+  /** API estruturada: bar | pie */
+  type?: "bar" | "pie";
   chart_type: "bar" | "pie" | "line" | "horizontal_bar";
   value_label?: "quantidade" | "valor" | "percentual" | string;
   data: AiReportChartPoint[];
+};
+
+export type ReportChatMessage = {
+  role: "user" | "assistant";
+  content: string;
 };
 
 export type AiReportTable = {
@@ -407,9 +442,19 @@ export function normalizeAiReportResponse(raw: Record<string, unknown>): AiRepor
   if (rawChart && typeof rawChart === "object") {
     const c = rawChart as Record<string, unknown>;
     if (Array.isArray(c.data) && c.data.length > 0) {
+      const rawType = String(c.type ?? c.chart_type ?? "bar").toLowerCase();
+      const chartType: AiReportChart["chart_type"] =
+        rawType === "pie"
+          ? "pie"
+          : rawType === "horizontal_bar" || rawType === "bar"
+            ? "horizontal_bar"
+            : rawType === "line"
+              ? "line"
+              : "horizontal_bar";
       chart = {
         title: String(c.title ?? raw.title ?? "Gráfico"),
-        chart_type: (c.chart_type as AiReportChart["chart_type"]) ?? "bar",
+        type: rawType === "pie" ? "pie" : "bar",
+        chart_type: chartType,
         value_label: String(c.value_label ?? "valor"),
         data: c.data as AiReportChart["data"],
       };
@@ -450,17 +495,23 @@ export function normalizeAiReportResponse(raw: Record<string, unknown>): AiRepor
 }
 
 export const aiReportChat = async (
-  message: string,
+  messages: ReportChatMessage[],
   items: unknown[],
   meta?: { filename?: string; uploadId?: string },
 ): Promise<AiReportChatResponse> => {
   try {
-    const response = await apiClient.post("/api/ai-report-chat", {
-      message,
-      items,
-      filename: meta?.filename ?? "orcamento",
-      upload_id: meta?.uploadId ?? "",
-    });
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const response = await apiClient.post(
+      "/api/ai-report-chat",
+      {
+        messages,
+        message: lastUser?.content ?? "",
+        items,
+        filename: meta?.filename ?? "orcamento",
+        upload_id: meta?.uploadId ?? "",
+      },
+      { timeout: 120000 },
+    );
     const data = response.data;
     if (data && typeof data === "object") {
       return normalizeAiReportResponse(data as Record<string, unknown>);
@@ -479,6 +530,25 @@ export const aiReportChat = async (
   }
 };
 
+function sanitizeAttachmentFilename(filename: string, mimeType: string): string {
+  const base = filename
+    .replace(/\.(pdf|md|csv|txt|xlsx)+$/gi, "")
+    .replace(/\.+/g, "_")
+    .replace(/_+$/g, "")
+    .trim() || "analise";
+
+  if (mimeType.includes("pdf")) {
+    return base.endsWith(".pdf") ? base : `${base}.pdf`;
+  }
+  if (mimeType.includes("csv")) {
+    return base.endsWith(".csv") ? base : `${base}.csv`;
+  }
+  if (mimeType.includes("markdown")) {
+    return base.endsWith(".md") ? base : `${base}.md`;
+  }
+  return filename;
+}
+
 export function downloadAiAttachment(att: AiReportAttachment): void {
   const binary = atob(att.content_base64);
   const bytes = new Uint8Array(binary.length);
@@ -489,7 +559,7 @@ export function downloadAiAttachment(att: AiReportAttachment): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = att.filename;
+  link.download = sanitizeAttachmentFilename(att.filename, att.mime_type);
   document.body.appendChild(link);
   link.click();
   link.remove();

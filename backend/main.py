@@ -51,11 +51,14 @@ from firebase_admin import auth as firebase_auth
 from services.openai_service import (
     identify_tables,
     process_selected_table,
+    generate_report_chat,
     OpenAIServiceError,
     _coerce_bdi,
     _coerce_number,
 )
+from services.report_pdf import build_analysis_pdf_bytes
 from services.ai_audit_logger import log_ai_exchange
+from services.xlsx_export import save_export_workbook
 
 try:
     import pdfplumber
@@ -643,6 +646,131 @@ def _camelot_table_to_rows(camelot_table: Any) -> List[List[Any]]:
     return rows
 
 
+def _count_nonempty_table_rows(rows: List[List[Any]]) -> int:
+    return sum(1 for row in rows if any(str(cell).strip() for cell in row))
+
+
+_BUDGET_HEADER_HINTS: Dict[str, List[str]] = {
+    "descricao": ["descrição", "descricao", "serviço", "servico", "do serviço", "do servico"],
+    "quantidade": ["qtde", "quant", "quantidade", "qtd"],
+    "valor": ["preço unit", "preco unit", "valor unit", "p. unit", "p.unit", "unitário", "unitario", "preço total", "preco total"],
+    "codigo": ["código", "codigo", "code"],
+    "bdi": ["bdi", "% bdi"],
+}
+_EDITAL_NOISE_KEYWORDS = (
+    "licitação",
+    "licitacao",
+    "edital",
+    "decreto",
+    "art.",
+    "parágrafo",
+    "microempresa",
+    "certame",
+    "fornecedor",
+    "proposta",
+    "habilitação",
+    "habilitacao",
+    "pregão",
+    "pregao",
+)
+_SERVICE_CODE_PATTERN = re.compile(
+    r"\b(CPU\d+|[A-Z]{2,}\d{3,}|\d{5,}[A-Z]?)\b",
+    re.IGNORECASE,
+)
+
+
+def _score_budget_table_likelihood(rows: List[List[Any]]) -> int:
+    """Pontua se a matriz parece planilha de orçamento (não texto do edital)."""
+    if not rows:
+        return 0
+
+    score = 0
+    sample_parts: List[str] = []
+    for row in rows[:15]:
+        sample_parts.append(" ".join(str(c).lower() for c in row if c))
+    sample_text = " ".join(sample_parts)
+
+    edital_hits = sum(1 for kw in _EDITAL_NOISE_KEYWORDS if kw in sample_text)
+    if edital_hits >= 4:
+        score -= 40
+    elif edital_hits >= 2:
+        score -= 15
+
+    for row in rows[:18]:
+        row_text = " ".join(str(c).lower() for c in row if c)
+        has_desc = any(k in row_text for k in _BUDGET_HEADER_HINTS["descricao"])
+        has_qtd = any(k in row_text for k in _BUDGET_HEADER_HINTS["quantidade"])
+        has_val = any(k in row_text for k in _BUDGET_HEADER_HINTS["valor"])
+        has_cod = any(k in row_text for k in _BUDGET_HEADER_HINTS["codigo"])
+        has_bdi = any(k in row_text for k in _BUDGET_HEADER_HINTS["bdi"])
+        if has_desc and (has_qtd or has_val):
+            score += 28
+        if has_cod and (has_qtd or has_val):
+            score += 22
+        if has_bdi and has_cod:
+            score += 12
+
+    code_rows = 0
+    for row in rows[1 : min(45, len(rows))]:
+        line = " ".join(str(c) for c in row if c)
+        if _SERVICE_CODE_PATTERN.search(line):
+            code_rows += 1
+    score += min(code_rows * 4, 36)
+
+    numeric_rows = 0
+    for row in rows[1 : min(35, len(rows))]:
+        nums = sum(1 for c in row if _coerce_number(c) > 0)
+        if nums >= 2:
+            numeric_rows += 1
+    score += min(numeric_rows * 2, 20)
+
+    if "orçamento" in sample_text or "orcamento" in sample_text:
+        score += 8
+    if "composição" in sample_text or "composicao" in sample_text:
+        score += 6
+
+    return score
+
+
+def _is_likely_budget_table(rows: List[List[Any]], min_score: int = 18) -> bool:
+    return _score_budget_table_likelihood(rows) >= min_score
+
+
+def _items_from_rows_fallback(rows: List[List[Any]], page: int) -> List[Dict[str, Any]]:
+    """Extrai itens localmente quando a IA não retorna linhas válidas."""
+    parser = BudgetParser()
+    parsed_items, _ = parser.parse_table(rows, page)
+    fallback: List[Dict[str, Any]] = []
+    for idx, it in enumerate(parsed_items, start=1):
+        if not isinstance(it, dict):
+            continue
+        descricao = str(it.get("descricao") or "").strip()
+        if len(descricao) < 3:
+            continue
+        q = _coerce_number(it.get("quantidade"))
+        vu = _coerce_number(it.get("valor_unitario"))
+        vt = _coerce_number(it.get("valor_total"))
+        if vt <= 0 and q > 0 and vu > 0:
+            vt = q * vu
+        if q <= 0 and vu <= 0 and vt <= 0:
+            continue
+        fallback.append(
+            {
+                "item": str(idx),
+                "tipo": "item",
+                "banco": "",
+                "codigo": "",
+                "descricao": descricao,
+                "bdi": 0.0,
+                "unidade": str(it.get("unidade") or "un"),
+                "quantidade": q,
+                "valor_unitario": vu,
+                "valor_total": vt,
+            }
+        )
+    return fallback
+
+
 def _deduplicate_orcamento_items(items: List[Any]) -> List[Dict[str, Any]]:
     """Remove itens repetidos após merge de várias tabelas (mesma página)."""
     seen: set[tuple[str, str, float, float]] = set()
@@ -674,67 +802,104 @@ def _resolve_rows_for_candidate(
     camelot_tables: Any,
 ) -> Tuple[List[List[Any]], int, str]:
     """
-    Resolve linhas da tabela escolhida pelo índice Camelot (table-N).
-    Evita reutilizar a maior tabela da página para candidatos distintos.
+    Resolve a melhor matriz de linhas para o candidato (Camelot + pdfplumber na mesma página).
     """
-    image_b64 = (selected_candidate or {}).get("imagem_base64")
+    page_hint = 1
+    if selected_candidate:
+        page_hint = int(
+            selected_candidate.get("num_pagina")
+            or selected_candidate.get("pagina")
+            or 1
+        )
+
+    options: List[Tuple[str, List[List[Any]], int, str, int]] = []
     camelot_idx = _candidate_camelot_index(candidate_id)
 
     if camelot_tables is not None and camelot_idx is not None:
         try:
             ct = camelot_tables[camelot_idx]
             rows = _camelot_table_to_rows(ct)
-            page = int(ct.page)
-            logger.info(
-                "Tabela %s resolvida via Camelot índice %s (pág %s, %s linhas)",
-                candidate_id,
-                camelot_idx,
-                page,
-                len(rows),
+            options.append(
+                (
+                    "camelot_index",
+                    rows,
+                    int(ct.page),
+                    candidate_id,
+                    _count_nonempty_table_rows(rows),
+                )
             )
-            return rows, page, candidate_id
         except (IndexError, AttributeError, TypeError) as exc:
             logger.warning("Falha ao ler Camelot[%s] para %s: %s", camelot_idx, candidate_id, exc)
 
-    if selected_candidate:
-        page = int(
-            selected_candidate.get("num_pagina")
-            or selected_candidate.get("pagina")
-            or 1
+    if camelot_tables is not None:
+        for idx, ct in enumerate(camelot_tables):
+            if int(ct.page) != page_hint:
+                continue
+            rows = _camelot_table_to_rows(ct)
+            options.append(
+                (
+                    f"camelot_page_{idx}",
+                    rows,
+                    page_hint,
+                    candidate_id,
+                    _count_nonempty_table_rows(rows),
+                )
+            )
+
+    page_tables = [t for t in all_tables if int(t.get("page") or 0) == page_hint]
+    for table in page_tables:
+        rows = table.get("rows") or []
+        options.append(
+            (
+                "pdfplumber",
+                rows,
+                page_hint,
+                str(table.get("table_id") or candidate_id),
+                _count_nonempty_table_rows(rows),
+            )
         )
-    else:
-        page = 1
 
     selected = _find_table_candidate(all_tables, candidate_id)
-    if not selected:
-        page_tables = [
-            t for t in all_tables if int(t.get("page") or 0) == int(page)
-        ]
-        if len(page_tables) == 1:
-            selected = page_tables[0]
-        elif page_tables and camelot_idx is not None:
-            page_tables_sorted = sorted(
-                page_tables,
-                key=lambda t: str(t.get("table_id") or ""),
-            )
-            pick = page_tables_sorted[min(camelot_idx, len(page_tables_sorted) - 1)]
-            selected = pick
-
     if selected:
         rows = selected.get("rows") or []
-        resolved_id = str(selected.get("table_id") or candidate_id)
-        page = int(selected.get("page") or page)
+        options.append(
+            (
+                "pdfplumber_id",
+                rows,
+                int(selected.get("page") or page_hint),
+                str(selected.get("table_id") or candidate_id),
+                _count_nonempty_table_rows(rows),
+            )
+        )
+
+    if options:
+        # Prioriza mais linhas com conteúdo; em empate, prefere pdfplumber na página correta
+        def score(option: Tuple[str, List[List[Any]], int, str, int]) -> Tuple[int, int]:
+            source, _, page, _, nonempty = option
+            if source.startswith("pdfplumber"):
+                source_rank = 3
+            elif source.startswith("camelot_page"):
+                source_rank = 2
+            else:
+                source_rank = 1
+            page_bonus = 1000 if page == page_hint else 0
+            return (nonempty + page_bonus, source_rank)
+
+        best = max(options, key=score)
+        source, rows, page, resolved_id, nonempty = best
         logger.info(
-            "Tabela %s resolvida via pdfplumber (%s, pág %s, %s linhas)",
+            "Tabela %s resolvida via %s (%s, pág %s, %s linhas, %s com conteúdo)",
             candidate_id,
+            source,
             resolved_id,
             page,
             len(rows),
+            nonempty,
         )
         return rows, page, resolved_id
 
-    logger.warning("Nenhuma linha encontrada para candidato %s", candidate_id)
-    return [], page, candidate_id
+    logger.warning("Nenhuma linha encontrada para candidato %s (página %s)", candidate_id, page_hint)
+    return [], page_hint, candidate_id
 
 
 def _find_table_candidate(all_tables: List[Dict], table_id: str) -> Dict | None:
@@ -764,6 +929,75 @@ def _find_table_for_page(all_tables: List[Dict], page_number: int) -> Dict | Non
         return (len(rows), int(columns))
 
     return sorted(page_tables, key=sort_key, reverse=True)[0]
+
+
+def _page_thumbnail_base64(file_path: Path, page_num: int, matrix_scale: float = 1.5) -> str:
+    doc = fitz.open(str(file_path))
+    try:
+        page = doc[page_num - 1]
+        pix = page.get_pixmap(matrix=fitz.Matrix(matrix_scale, matrix_scale))
+        return base64.b64encode(pix.tobytes("png")).decode("utf-8")
+    finally:
+        doc.close()
+
+
+def _pdfplumber_detect_options(file_path: Path, min_nonempty_rows: int = 8) -> List[Dict[str, Any]]:
+    """Candidatos de tabela via pdfplumber (mais linhas que Camelot em PDFs de orçamento)."""
+    try:
+        all_tables = _extract_tables_from_pdf_path(file_path)
+    except Exception as exc:
+        logger.warning("pdfplumber detect: %s", exc)
+        return []
+
+    thumb_cache: Dict[int, str] = {}
+    options: List[Dict[str, Any]] = []
+    scored: List[Tuple[int, Dict[str, Any]]] = []
+    for table in all_tables:
+        rows = table.get("rows") or []
+        nonempty = _count_nonempty_table_rows(rows)
+        if nonempty < min_nonempty_rows:
+            continue
+        budget_score = _score_budget_table_likelihood(rows)
+        page_num = int(table.get("page") or 1)
+        table_id = str(table.get("table_id") or f"page_{page_num}_table_0")
+        preview = _preview_text_for_table_rows(rows)
+        name = _guess_table_name_from_preview(preview, len(scored) + 1)
+        if page_num not in thumb_cache:
+            try:
+                thumb_cache[page_num] = _page_thumbnail_base64(file_path, page_num)
+            except Exception as exc:
+                logger.warning("thumbnail página %s: %s", page_num, exc)
+                thumb_cache[page_num] = ""
+        scored.append(
+            (
+                budget_score,
+                {
+                    "id": table_id,
+                    "pagina": page_num,
+                    "num_pagina": page_num,
+                    "nome_tabela": f"{name} (Pág {page_num}, {nonempty} linhas)",
+                    "preview_texto": preview,
+                    "imagem_base64": thumb_cache.get(page_num) or None,
+                    "coordenadas": None,
+                    "source": "pdfplumber",
+                    "row_count": nonempty,
+                    "budget_score": budget_score,
+                    "is_budget_likely": budget_score >= 18,
+                },
+            )
+        )
+
+    likely = [entry for score, entry in scored if score >= 18]
+    options = likely if likely else [entry for _, entry in sorted(scored, key=lambda x: -x[0])[:12]]
+    if not likely and options:
+        logger.warning(
+            "detect-tables: nenhuma tabela com score alto; retornando %s melhores candidatos",
+            len(options),
+        )
+    options.sort(
+        key=lambda o: (-int(o.get("budget_score") or 0), -int(o.get("row_count") or 0))
+    )
+    return options
 
 
 def _guess_table_name_from_preview(preview_text: str, fallback_index: int) -> str:
@@ -1257,15 +1491,23 @@ async def detect_orcamento_tables(
                 img_bytes = pix.tobytes("png")
                 b64 = base64.b64encode(img_bytes).decode("utf-8")
                 
+                camelot_rows = _camelot_table_to_rows(table)
+                nonempty = _count_nonempty_table_rows(camelot_rows)
+                budget_score = _score_budget_table_likelihood(camelot_rows)
+                if budget_score < 12 and nonempty < 15:
+                    continue
                 options.append({
                     "id": f"table-{idx}",
                     "pagina": page_num,
                     "coordenadas": [x0, y0, x1, y1],
                     "imagem_base64": b64,
-                    # Campos legados para não quebrar o frontend imediatamente se ele ainda depender
-                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num})",
+                    "nome_tabela": f"Tabela {idx + 1} (Pág {page_num}, {nonempty} linhas)",
                     "num_pagina": page_num,
-                    "preview_texto": "Visualização disponível via imagem."
+                    "preview_texto": _preview_text_for_table_rows(camelot_rows) or "Visualização disponível via imagem.",
+                    "source": "camelot",
+                    "row_count": nonempty,
+                    "budget_score": budget_score,
+                    "is_budget_likely": budget_score >= 18,
                 })
             
             doc.close()
@@ -1274,11 +1516,52 @@ async def detect_orcamento_tables(
         logger.error("detect-tables: falha na identificação com Camelot: %s", exc)
         raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
 
-    fallback_used = False
-    if not options:
+    plumber_options = _pdfplumber_detect_options(file_path)
+    camelot_max_rows = max((int(o.get("row_count") or 0) for o in options), default=0)
+
+    if not options or camelot_max_rows < 10:
+        logger.info(
+            "detect-tables: usando pdfplumber (%s candidatos; Camelot tinha %s)",
+            len(plumber_options),
+            len(options),
+        )
+        options = plumber_options
         fallback_used = True
-        # Se o Camelot não achar nada, retorna array vazio ou fallback
-        pass
+    else:
+        seen_ids = {str(o.get("id")) for o in options}
+        for po in plumber_options:
+            if int(po.get("row_count") or 0) < 15:
+                continue
+            page_num = int(po.get("pagina") or 0)
+            camelot_on_page = [
+                o for o in options if int(o.get("pagina") or 0) == page_num
+            ]
+            best_camelot = max(
+                (int(o.get("row_count") or 0) for o in camelot_on_page),
+                default=0,
+            )
+            if int(po.get("row_count") or 0) <= best_camelot * 2:
+                continue
+            if po.get("id") not in seen_ids:
+                options.append(po)
+                seen_ids.add(str(po.get("id")))
+        options.sort(
+            key=lambda o: (
+                -int(o.get("budget_score") or 0),
+                -int(o.get("row_count") or 0),
+                int(o.get("pagina") or 0),
+            )
+        )
+        fallback_used = False
+
+    recommended_ids = [
+        str(o["id"])
+        for o in sorted(
+            options,
+            key=lambda o: (-int(o.get("budget_score") or 0), -int(o.get("row_count") or 0)),
+        )[:8]
+        if o.get("is_budget_likely")
+    ]
 
     _OFFLINE_CACHE.setdefault(upload_id, {})
     _OFFLINE_CACHE[upload_id]["table_candidates"] = options
@@ -1291,6 +1574,7 @@ async def detect_orcamento_tables(
         "upload_id": upload_id,
         "tables_found": len(options),
         "options": options,
+        "recommended_table_ids": recommended_ids,
         "mock_fallback": fallback_used,
     }
 
@@ -1409,6 +1693,15 @@ async def process_orcamento_confirmed(
                 detail=f"Tabela não encontrada para o ID: {t_id}",
             )
 
+        if _count_nonempty_table_rows(rows) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"A tabela {t_id} (página {page}) tem poucas linhas ({len(rows)}). "
+                    "Selecione outra tabela com o orçamento detalhado."
+                ),
+            )
+
         candidate_name = str((selected_candidate or {}).get("nome_tabela") or "")
         table_image_b64 = (selected_candidate or {}).get("imagem_base64")
 
@@ -1439,23 +1732,47 @@ async def process_orcamento_confirmed(
                 table_image_base64=table_image_b64,
             )
             
-            # Merge items (já normalizados pelo openai_service)
             items_this_table = structured_data.get("items") or []
+            if not items_this_table:
+                logger.warning(
+                    "IA retornou 0 itens para %s (pág %s, %s linhas). Tentando parser local.",
+                    t_id,
+                    page,
+                    len(rows),
+                )
+                items_this_table = _items_from_rows_fallback(rows, page)
+                if items_this_table:
+                    ia_metadata_list.append(
+                        {
+                            "table_id": resolved_table_id,
+                            "provider": "local:budget_parser_fallback",
+                            "resumo": {"total_items": len(items_this_table)},
+                        }
+                    )
+
             for raw_item in items_this_table:
                 if isinstance(raw_item, dict):
                     raw_item.setdefault("_source_table_id", t_id)
             combined_items.extend(items_this_table)
-            
-            # Merge resumo
+
             resumo_this = structured_data.get("resumo") or {}
             combined_resumo["total_items"] += int(resumo_this.get("total_items") or len(items_this_table))
-            combined_resumo["valor_total"] += float(resumo_this.get("valor_total") or sum(float(item.get("valor_total") or 0) for item in items_this_table))
-            
-            ia_metadata_list.append({
-                "table_id": resolved_table_id,
-                "provider": provider_used,
-                "resumo": resumo_this
-            })
+            combined_resumo["valor_total"] += float(
+                resumo_this.get("valor_total")
+                or sum(float(item.get("valor_total") or 0) for item in items_this_table)
+            )
+
+            used_fallback = any(
+                m.get("table_id") == resolved_table_id
+                and m.get("provider") == "local:budget_parser_fallback"
+                for m in ia_metadata_list
+            )
+            if not used_fallback:
+                ia_metadata_list.append({
+                    "table_id": resolved_table_id,
+                    "provider": provider_used,
+                    "resumo": resumo_this,
+                })
             
         except OpenAIServiceError as exc:
             logger.warning(f"Erro ao processar tabela {t_id}: {exc}")
@@ -1471,7 +1788,17 @@ async def process_orcamento_confirmed(
             raise HTTPException(status_code=500, detail=f"Erro inesperado na tabela {t_id}: {str(exc)}")
 
     if not combined_items:
-        raise HTTPException(status_code=500, detail="Falha ao extrair dados de todas as tabelas selecionadas. Verifique os logs do servidor.")
+        tabelas_txt = ", ".join(ids_to_process)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Nenhum item de orçamento foi extraído das tabelas selecionadas. "
+                "As páginas marcadas parecem ser capa, edital ou texto jurídico — não a planilha "
+                "com colunas Código, Descrição, Qtde e Preço Unitário. "
+                f"Tabelas: {tabelas_txt}. Volte ao passo anterior e selecione páginas da planilha analítica "
+                "(as sugestões no topo da lista costumam ser as corretas)."
+            ),
+        )
 
     combined_items = _deduplicate_orcamento_items(combined_items)
     logger.info(
@@ -2093,11 +2420,38 @@ def _sanitize_ai_chart(
     return chart
 
 
+class ReportChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=8000)
+
+
 class AiReportChatRequest(BaseModel):
-    message: str = Field(..., min_length=3, max_length=2000)
+    """Suporta histórico multi-turno (messages) ou pergunta única legada (message)."""
+    messages: List[ReportChatMessage] = Field(default_factory=list)
+    message: str = Field(default="", max_length=2000)
     items: List[Dict[str, Any]] = Field(default_factory=list)
     filename: str = Field(default="orcamento")
     upload_id: str = Field(default="")
+
+
+def _resolve_report_conversation(payload: AiReportChatRequest) -> Tuple[List[Dict[str, str]], str]:
+    conv: List[Dict[str, str]] = []
+    for msg in payload.messages or []:
+        role = str(msg.role).lower().strip()
+        content = str(msg.content).strip()
+        if role in ("user", "assistant") and content:
+            conv.append({"role": role, "content": content})
+    if conv:
+        last_user = ""
+        for msg in reversed(conv):
+            if msg["role"] == "user":
+                last_user = msg["content"]
+                break
+        return conv, last_user
+    single = str(payload.message or "").strip()
+    if len(single) < 3:
+        raise HTTPException(status_code=400, detail="Informe uma mensagem ou histórico messages[]")
+    return [{"role": "user", "content": single}], single
 
 
 def _encode_attachment(filename: str, mime_type: str, text_content: str) -> Dict[str, str]:
@@ -2108,6 +2462,137 @@ def _encode_attachment(filename: str, mime_type: str, text_content: str) -> Dict
     }
 
 
+def _encode_attachment_bytes(filename: str, mime_type: str, raw: bytes) -> Dict[str, str]:
+    return {
+        "filename": filename,
+        "mime_type": mime_type,
+        "content_base64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def _safe_attachment_stem(upload_label: str) -> str:
+    """Remove extensões (.pdf, .md) do nome do arquivo para anexos."""
+    raw = str(upload_label or "orcamento").strip()
+    stem = Path(raw).stem
+    stem = re.sub(r"[^\w\-]+", "_", stem).strip("_")
+    return stem[:40] or "orcamento"
+
+
+def _format_brl(value: float) -> str:
+    return (
+        f"R$ {value:,.2f}"
+        .replace(",", "\u00a4")
+        .replace(".", ",")
+        .replace("\u00a4", ".")
+    )
+
+
+def _wants_markdown_table(message: str) -> bool:
+    msg = message.lower()
+    return any(
+        k in msg
+        for k in (
+            "tabela",
+            "table",
+            "liste",
+            "listar",
+            "listagem",
+            "ranking",
+            "top ",
+            "maiores",
+            "mais caro",
+            "mais caros",
+        )
+    )
+
+
+def _extract_table_limit(message: str, default: int = 10) -> int:
+    msg = message.lower()
+    patterns = [
+        r"(\d+)\s*(?:itens|item|maiores|primeiros|principais)",
+        r"top\s*(\d+)",
+        r"(\d+)\s*mais\s*car",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, msg)
+        if match:
+            return min(max(int(match.group(1)), 1), 50)
+    return default
+
+
+def _build_markdown_table_from_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    title: str,
+    limit: int,
+) -> str:
+    """Gera tabela GFM (pipe) para renderização no chat."""
+    top = rows[:limit]
+    if not top:
+        return "Nenhum item encontrado para montar a tabela."
+
+    lines = [
+        f"### {title}",
+        "",
+        "| # | Descrição | Qtd. | Unid. | Valor total |",
+        "|---:|---|---:|---|---:|",
+    ]
+    for idx, row in enumerate(top, 1):
+        desc = str(row.get("descricao") or row.get("description") or "—").replace("|", "/")
+        qty = _coerce_number(row.get("quantidade") or row.get("quantity") or 0)
+        unit = str(row.get("unidade") or row.get("unit") or "—")
+        val = _coerce_number(
+            row.get("valor_total")
+            or row.get("metric")
+            or row.get("valor_total_calculado")
+            or _item_line_total(row)
+        )
+        lines.append(
+            f"| {idx} | {desc[:80]} | {qty:,.2f} | {unit} | {_format_brl(val)} |"
+        )
+    return "\n".join(lines)
+
+
+def _ensure_reply_has_markdown_table(
+    reply: str,
+    items: List[Dict[str, Any]],
+    message: str,
+) -> str:
+    """Garante tabela Markdown quando o usuário pediu tabela e a IA devolveu só lista."""
+    if not _wants_markdown_table(message):
+        return reply
+
+    if "|" in reply and re.search(r"\|[\s\-:]+\|", reply):
+        return reply
+
+    limit = _extract_table_limit(message, default=10)
+    sorted_items = sorted(
+        [i for i in items if _is_executive_budget_item(i)],
+        key=lambda i: _item_line_total(i),
+        reverse=True,
+    )
+    table_md = _build_markdown_table_from_rows(
+        [
+            {
+                "descricao": str(i.get("descricao") or i.get("description") or ""),
+                "quantidade": i.get("quantidade") or i.get("quantity"),
+                "unidade": i.get("unidade") or i.get("unit"),
+                "valor_total": _item_line_total(i),
+            }
+            for i in sorted_items
+        ],
+        title=f"Top {limit} itens por valor total",
+        limit=limit,
+    )
+
+    intro = reply.strip()
+    if intro.startswith("## Resposta (análise local)"):
+        return f"{table_md}\n\n---\n\n{intro}"
+    if intro:
+        return f"{table_md}\n\n{intro}"
+    return table_md
+
+
 def _build_report_attachments(
     reply: str,
     table: Dict[str, Any] | None,
@@ -2115,13 +2600,36 @@ def _build_report_attachments(
     upload_label: str,
 ) -> List[Dict[str, str]]:
     attachments: List[Dict[str, str]] = []
-    safe_label = re.sub(r"[^\w\-]+", "_", upload_label)[:40] or "orcamento"
+    safe_label = _safe_attachment_stem(upload_label)
 
-    if reply and len(reply.strip()) > 80:
-        md = f"# Análise — {upload_label}\n\n{reply.strip()}\n"
-        attachments.append(
-            _encode_attachment(f"analise_{safe_label}.md", "text/markdown", md)
-        )
+    has_pdf_content = bool(
+        (reply and reply.strip())
+        or (chart and isinstance(chart.get("data"), list) and chart.get("data"))
+        or (table and isinstance(table.get("rows"), list) and table.get("rows"))
+    )
+    if has_pdf_content:
+        doc_title = f"Análise - {upload_label}"
+        body = (reply or "").strip()
+        try:
+            pdf_bytes = build_analysis_pdf_bytes(
+                doc_title,
+                body,
+                chart=chart if isinstance(chart, dict) else None,
+                table=table if isinstance(table, dict) else None,
+            )
+            attachments.append(
+                _encode_attachment_bytes(
+                    f"analise_{safe_label}.pdf",
+                    "application/pdf",
+                    pdf_bytes,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Falha ao gerar PDF da análise, usando Markdown: %s", exc)
+            md = f"# {doc_title}\n\n{body}\n"
+            attachments.append(
+                _encode_attachment(f"analise_{safe_label}.md", "text/markdown", md)
+            )
 
     if table and isinstance(table.get("rows"), list):
         headers = table.get("headers") or []
@@ -2189,13 +2697,15 @@ def _local_report_response(
             {
                 "descricao": desc,
                 "quantidade": qty,
+                "unidade": str(item.get("unidade") or item.get("unit") or "un"),
                 "valor_total": val,
                 "metric": metric,
             }
         )
 
     rows_data.sort(key=lambda r: r["metric"], reverse=True)
-    top = rows_data[:10]
+    limit = _extract_table_limit(message, default=10)
+    top = rows_data[:limit]
 
     metric_label = (
         "valor total (R$)"
@@ -2213,22 +2723,27 @@ def _local_report_response(
         {"name": r["descricao"][:40], "value": float(r["metric"])} for r in top
     ]
 
-    lines = [
-        "## Resposta (análise local)\n",
-        f"Pedido: *{message[:200]}*\n",
-    ]
-    if abc_filter:
-        lines.append(
-            f"Filtro aplicado: **Curva {abc_filter}** ({len(items)} itens nesta classe).\n"
-        )
-    lines.append(f"Top **{len(top)}** itens por **{metric_label}**:\n")
-    for i, r in enumerate(top, 1):
-        lines.append(
-            f"{i}. **{r['descricao']}** — qtd: {r['quantidade']:,.2f}, "
-            f"valor: R$ {r['valor_total']:,.2f}"
-        )
-
-    reply = "\n".join(lines)
+    if _wants_markdown_table(message):
+        title = f"Top {limit} itens por {metric_label}"
+        if abc_filter:
+            title = f"Curva {abc_filter} - {title}"
+        reply = _build_markdown_table_from_rows(top, title=title, limit=limit)
+    else:
+        lines = [
+            "## Resposta (análise local)\n",
+            f"Pedido: *{message[:200]}*\n",
+        ]
+        if abc_filter:
+            lines.append(
+                f"Filtro aplicado: **Curva {abc_filter}** ({len(items)} itens nesta classe).\n"
+            )
+        lines.append(f"Top **{len(top)}** itens por **{metric_label}**:\n")
+        for i, r in enumerate(top, 1):
+            lines.append(
+                f"{i}. **{r['descricao']}** - qtd: {r['quantidade']:,.2f}, "
+                f"valor: {_format_brl(r['valor_total'])}"
+            )
+        reply = "\n".join(lines)
     table = {
         "title": f"Top itens por {metric_label}",
         "headers": ["#", "Descrição", "Quantidade", "Valor total (R$)"],
@@ -2262,15 +2777,18 @@ async def ai_report_chat(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Assistente de análise sobre orçamento (texto, tabelas, gráficos opcionais).
-    Retorna resposta para o chat e anexos para download (CSV/Markdown).
+    Assistente ChatGPT-style: histórico multi-turno, Markdown nas respostas e gráfico opcional.
     """
+    conversation, last_user_message = _resolve_report_conversation(payload)
+
     items = payload.items or []
     if not items:
         raise HTTPException(status_code=400, detail="Nenhum item enviado para análise")
 
     enriched_items = _enrich_items_with_abc(items)
-    working_items, abc_filter = _filter_items_for_message(enriched_items, payload.message)
+    working_items, abc_filter = _filter_items_for_message(
+        enriched_items, last_user_message
+    )
     if abc_filter and not working_items:
         raise HTTPException(
             status_code=400,
@@ -2280,104 +2798,62 @@ async def ai_report_chat(
             ),
         )
 
-    compact_items = []
-    for idx, item in enumerate(working_items[:250]):
-        compact_items.append(
+    budget_items: List[Dict[str, Any]] = []
+    for idx, item in enumerate(working_items[:300]):
+        budget_items.append(
             {
                 "i": idx + 1,
-                "codigo": str(item.get("codigo") or item.get("code") or "")[:20],
-                "descricao": str(item.get("descricao") or item.get("description") or "")[:120],
+                "item": str(item.get("item") or ""),
+                "codigo": str(item.get("codigo") or item.get("code") or ""),
+                "descricao": str(item.get("descricao") or item.get("description") or ""),
+                "tipo": str(item.get("tipo") or "item"),
+                "unidade": str(item.get("unidade") or item.get("unit") or "un"),
                 "quantidade": _coerce_number(
                     item.get("quantidade") or item.get("quantity") or item.get("qty")
                 ),
-                "unidade": str(item.get("unidade") or item.get("unit") or "un")[:10],
                 "valor_unitario": _coerce_number(
-                    item.get("valor_unitario") or item.get("unitValue") or item.get("unitPrice")
+                    item.get("valor_unitario")
+                    or item.get("unitValue")
+                    or item.get("unitPrice")
                 ),
+                "bdi": _coerce_bdi(item.get("bdi")),
                 "valor_total": _coerce_number(
                     item.get("valor_total") or item.get("totalValue") or item.get("lineTotal")
                 ),
-                "bdi": _coerce_bdi(item.get("bdi")),
-                "classificacao": str(item.get("classification") or "").upper()[:1],
-                "percentual_individual": _coerce_number(item.get("individual_percentage") or 0),
                 "valor_total_calculado": _item_line_total(item),
+                "classificacao": str(item.get("classification") or "").upper()[:1],
+                "percentual_individual": round(
+                    _coerce_number(item.get("individual_percentage") or 0), 4
+                ),
+                "percentual_acumulado": round(
+                    _coerce_number(item.get("accumulated_percentage") or 0), 4
+                ),
             }
         )
 
-    abc_hint = ""
-    if abc_filter:
-        abc_hint = (
-            f"\n- O usuário pediu APENAS itens da Curva {abc_filter}. "
-            f"Todos os itens enviados já pertencem à classe {abc_filter}."
-        )
-
-    system_message = (
-        """Você é especialista em orçamentos de construção civil no Brasil.
-O usuário faz perguntas sobre UM orçamento extraído de PDF (itens fornecidos).
-Responda APENAS com JSON válido (sem markdown fora do campo reply):
-{
-  "reply": "resposta completa em markdown em português (pode ser longa, com listas e tabelas)",
-  "response_type": "text" | "chart" | "table" | "mixed",
-  "chart": null OU {
-    "title": "título",
-    "chart_type": "bar" | "pie" | "line" | "horizontal_bar",
-    "value_label": "quantidade" | "valor" | "percentual",
-    "data": [{"name": "rótulo", "value": número}]
-  },
-  "table": null OU {
-    "title": "título",
-    "headers": ["col1", "col2"],
-    "rows": [["a", 1], ["b", 2]]
-  }
-}
-Regras OBRIGATÓRIAS:
-- Use SOMENTE os itens fornecidos; não invente serviços ou valores
-- Se o pedido for texto/relatório/comparação/resumo: response_type text ou table, chart null
-- Se pedir gráfico: inclua chart com até 15 pontos; value_label coerente com o eixo
-- Para barras com descrições longas de itens, prefira chart_type "horizontal_bar" (legível)
-- Se pedir relatório detalhado: reply longo + table preenchida
-- Não responda sobre assuntos fora do orçamento/PDF
-- CRÍTICO: quando value_label for "valor", use valor_total_calculado em reais (ex: 150000.50), NUNCA percentual acumulado (0-100)
-- CRÍTICO: "percentual" só quando o usuário pedir percentual/% explicitamente"""
-        + abc_hint
-    )
-
-    user_message = {
-        "pedido_usuario": payload.message,
+    budget_context = {
         "arquivo": payload.filename,
-        "total_itens": len(compact_items),
-        "itens": compact_items,
+        "upload_id": payload.upload_id,
+        "total_itens": len(budget_items),
+        "filtro_curva_abc_aplicado": abc_filter,
+        "itens": budget_items,
     }
 
-    content = None
     provider_used = "local:fallback"
     errors: List[str] = []
     parsed: Dict[str, Any] | None = None
 
-    if OPENAI_API_KEY:
-        try:
-            content, provider_used = await _call_openai_compatible_generate_content(
-                provider="openai",
-                base_url="https://api.openai.com/v1",
-                api_key=OPENAI_API_KEY,
-                model=OPENAI_MODEL,
-                system_message=system_message,
-                user_message=user_message,
-                timeout_seconds=AI_PROVIDER_TIMEOUT_SECONDS,
-            )
-        except AIProviderError as exc:
-            errors.append(f"{exc.provider}: {exc.details}")
+    try:
+        parsed, provider_used = await generate_report_chat(conversation, budget_context)
+    except OpenAIServiceError as exc:
+        errors.append(str(exc))
+    except Exception as exc:
+        logger.exception("Erro generate_report_chat")
+        errors.append(str(exc))
 
-    if content:
-        try:
-            parsed = json.loads(_clean_json_text(content))
-        except json.JSONDecodeError:
-            errors.append("parser: JSON inválido da IA")
-            parsed = None
-
-    if not parsed:
+    if not parsed or not str(parsed.get("reply") or "").strip():
         parsed = _local_report_response(
-            payload.message, working_items, abc_filter=abc_filter
+            last_user_message, working_items, abc_filter=abc_filter
         )
         provider_used = "local:fallback"
 
@@ -2385,26 +2861,12 @@ Regras OBRIGATÓRIAS:
     if not reply:
         reply = "Não foi possível gerar uma análise para este pedido."
 
-    chart_raw = parsed.get("chart")
-    chart: Dict[str, Any] | None = None
-    if isinstance(chart_raw, dict) and chart_raw.get("data"):
-        normalized_data = []
-        for row in (chart_raw.get("data") or [])[:15]:
-            if not isinstance(row, dict):
-                continue
-            normalized_data.append(
-                {
-                    "name": str(row.get("name") or row.get("label") or "—")[:50],
-                    "value": _coerce_number(row.get("value") or row.get("valor") or 0),
-                }
-            )
-        if normalized_data:
-            chart = {
-                "title": str(chart_raw.get("title") or "Gráfico"),
-                "chart_type": str(chart_raw.get("chart_type") or "bar"),
-                "value_label": str(chart_raw.get("value_label") or "valor"),
-                "data": normalized_data,
-            }
+    reply = _ensure_reply_has_markdown_table(reply, working_items, last_user_message)
+
+    chart: Dict[str, Any] | None = parsed.get("chart") if isinstance(parsed.get("chart"), dict) else None
+    if chart and not chart.get("chart_type"):
+        raw_type = str(chart.get("type") or "bar").lower()
+        chart["chart_type"] = "pie" if raw_type == "pie" else "horizontal_bar"
 
     chart_title_default = (
         f"Itens da Curva {abc_filter} do Orçamento"
@@ -2414,30 +2876,22 @@ Regras OBRIGATÓRIAS:
     chart = _sanitize_ai_chart(
         chart,
         working_items,
-        payload.message,
+        last_user_message,
         default_title=chart_title_default,
     )
 
-    table_raw = parsed.get("table")
-    table: Dict[str, Any] | None = None
-    if isinstance(table_raw, dict) and table_raw.get("rows"):
-        table = {
-            "title": str(table_raw.get("title") or "Tabela"),
-            "headers": table_raw.get("headers") or [],
-            "rows": table_raw.get("rows") or [],
-        }
-
     upload_label = payload.filename or payload.upload_id or "orcamento"
-    attachments = _build_report_attachments(reply, table, chart, upload_label)
+    report_table = parsed.get("table") if isinstance(parsed.get("table"), dict) else None
+    attachments = _build_report_attachments(reply, report_table, chart, upload_label)
 
     return {
         "status": "success",
         "provider": provider_used,
         "warnings": errors,
         "reply": reply,
-        "response_type": str(parsed.get("response_type") or "text"),
+        "response_type": str(parsed.get("response_type") or ("mixed" if chart else "text")),
         "chart": chart,
-        "table": table,
+        "table": report_table,
         "attachments": attachments,
     }
 
@@ -2875,170 +3329,45 @@ def _prepare_xlsx_export_rows(items: List[Dict]) -> Tuple[List[Dict[str, Any]], 
     return prepared, total_geral
 
 
+class ExportXlsxRequest(BaseModel):
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    modelos_selecionados: Dict[str, bool] = Field(
+        default_factory=lambda: {
+            "analitico": True,
+            "sintetico": True,
+            "curva_abc": True,
+        }
+    )
+    nome_projeto: str | None = None
+
+
 # ============== EXPORT XLSX ==============
 @app.post("/api/export-xlsx")
 async def export_xlsx(
-    items: List[Dict],
+    payload: ExportXlsxRequest,
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Exporta planilha analítica completa (layout cliente):
-    Código, Descrição, BDI, Unid., Quant., custos S/BDI e C/BDI, %, Acumulado, Class.
+    Exporta XLSX com abas condicionais: Analítico, Sintético e/ou Curva ABC.
     """
     try:
-        if not Workbook:
-            raise HTTPException(
-                status_code=500,
-                detail="openpyxl não está instalado",
-            )
+        items = payload.items or []
+        if not items:
+            raise HTTPException(status_code=400, detail="Nenhum item para exportar.")
 
-        rows, total_geral = _prepare_xlsx_export_rows(items)
-        if not rows:
-            raise HTTPException(status_code=400, detail="Nenhum item válido para exportar.")
-
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Orçamento"
-
-        header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-        header_font = Font(bold=True, color="FFFFFF", size=10)
-        total_fill = PatternFill(start_color="E8F4F8", end_color="E8F4F8", fill_type="solid")
-        total_font = Font(bold=True, size=11)
-        zebra_light = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
-        zebra_white = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-        class_fills = {
-            "A": PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid"),
-            "B": PatternFill(start_color="FEF08A", end_color="FEF08A", fill_type="solid"),
-            "C": PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid"),
-        }
-        class_fonts = {
-            "A": Font(bold=True, color="991B1B"),
-            "B": Font(bold=True, color="854D0E"),
-            "C": Font(bold=True, color="065F46"),
-        }
-
-        border = Border(
-            left=Side(style="thin", color="D1D5DB"),
-            right=Side(style="thin", color="D1D5DB"),
-            top=Side(style="thin", color="D1D5DB"),
-            bottom=Side(style="thin", color="D1D5DB"),
+        file_path, filename = save_export_workbook(
+            items,
+            payload.modelos_selecionados,
+            TEMP_FOLDER,
+            nome_projeto=payload.nome_projeto,
         )
 
-        headers = [
-            "Código Serviço",
-            "Descrição",
-            "BDI",
-            "Unidade",
-            "Quantidade",
-            "Custo Unitário S/BDI",
-            "Preço Unitário C/BDI",
-            "Preço Total S/BDI",
-            "Preço Total C/BDI",
-            "%",
-            "Acumulado",
-            "Class.",
-        ]
-        col_count = len(headers)
-
-        for col_num, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_num)
-            cell.value = header
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = border
-
-        right_cols = {3, 5, 6, 7, 8, 9, 10, 11}
-        center_cols = {4, 12}
-
-        for idx, row_data in enumerate(rows):
-            row_num = idx + 2
-            stripe = zebra_light if idx % 2 == 0 else zebra_white
-
-            values = [
-                row_data["code"],
-                row_data["description"],
-                row_data["bdi"],
-                row_data["unit"],
-                row_data["qty"],
-                row_data["unit_sem_bdi"],
-                row_data["unit_com_bdi"],
-                row_data["total_sem_bdi"],
-                row_data["total_com_bdi"],
-                row_data["percent"],
-                row_data["accumulated"],
-                row_data["classification"],
-            ]
-            formats = [
-                None,
-                None,
-                '0.00"%"',
-                None,
-                "#,##0.0000",
-                'R$ #,##0.00',
-                '#,##0.000',
-                '#,##0.00',
-                '#,##0.00',
-                '0.00"%"',
-                '0.00"%"',
-                None,
-            ]
-
-            for col_num, value in enumerate(values, 1):
-                cell = ws.cell(row=row_num, column=col_num)
-                cell.value = value
-                cell.border = border
-                if formats[col_num - 1]:
-                    cell.number_format = formats[col_num - 1]
-                if col_num in right_cols:
-                    cell.alignment = Alignment(horizontal="right", vertical="center")
-                elif col_num in center_cols:
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                else:
-                    cell.alignment = Alignment(horizontal="left", vertical="center")
-
-                if col_num == 12:
-                    cls = str(row_data.get("classification") or "").strip().upper()
-                    cell.fill = class_fills.get(cls, stripe)
-                    cell.font = class_fonts.get(cls, Font(bold=True))
-                else:
-                    cell.fill = stripe
-
-        total_row = len(rows) + 3
-        ws.cell(row=total_row, column=8).value = "TOTAL GERAL:"
-        ws.cell(row=total_row, column=8).font = total_font
-        ws.cell(row=total_row, column=8).alignment = Alignment(horizontal="right")
-        ws.cell(row=total_row, column=9).value = total_geral
-        ws.cell(row=total_row, column=9).number_format = "#,##0.00"
-        ws.cell(row=total_row, column=9).fill = total_fill
-        ws.cell(row=total_row, column=9).font = total_font
-        ws.cell(row=total_row, column=9).border = border
-
-        col_widths = {
-            "A": 16,
-            "B": 52,
-            "C": 10,
-            "D": 10,
-            "E": 14,
-            "F": 18,
-            "G": 18,
-            "H": 18,
-            "I": 18,
-            "J": 10,
-            "K": 12,
-            "L": 8,
-        }
-        for col_letter, width in col_widths.items():
-            ws.column_dimensions[col_letter].width = width
-
-        ws.row_dimensions[1].height = 28
-        ws.freeze_panes = "A2"
-
-        filename = f"orcamento_{uuid.uuid4().hex[:8]}.xlsx"
-        file_path = TEMP_FOLDER / filename
-        wb.save(file_path)
-
-        logger.info("✅ XLSX analítico gerado: %s (%s itens)", file_path, len(rows))
+        logger.info(
+            "✅ XLSX gerado: %s (%s itens, modelos=%s)",
+            file_path,
+            len(items),
+            payload.modelos_selecionados,
+        )
 
         return FileResponse(
             path=file_path,
@@ -3046,6 +3375,8 @@ async def export_xlsx(
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
