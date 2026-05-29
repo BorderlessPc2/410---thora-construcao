@@ -5,6 +5,7 @@ Chave via OPENAI_API_KEY (nunca embutida no código).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -12,7 +13,7 @@ import os
 import re
 import time
 from io import BytesIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pdfplumber
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, BadRequestError, OpenAIError, RateLimitError
@@ -25,6 +26,7 @@ from config import (
 )
 
 from .ai_audit_logger import log_ai_exchange, truncate_rows_for_audit
+from .budget_scoring import BudgetPageCandidate, detect_budget_pages
 
 logger = logging.getLogger(__name__)
 
@@ -125,17 +127,9 @@ FULL_PDF_PAGE_USER_TEMPLATE = (
     "TEXTO EXTRAÍDO DA PÁGINA (referência; a imagem prevalece):\n{text_snippet}"
 )
 
-_BUDGET_PAGE_KEYWORDS = (
-    "sinapi", "sicro", "orse", "siurb", "agetop", "sco ",
-    "grupo", "composição", "composicao", "insumo",
-    "orçamento", "orcamento", "planilha analítica", "planilha analitica",
-    "planilha orçamentária", "planilha orcamentaria",
-    "valor unit", "preço unit", "preco unit", "quant.", "qtde",
-    "b.d.i", "bdi", "código", "codigo", "demolição", "demolicao",
-    "serviços", "servicos", " und ", "m²", "m3", "m²",
-)
-
-_MAX_FULL_PDF_PAGES = 60
+_MAX_FULL_PDF_PAGES = int(os.getenv("ANALITICO_MAX_PAGES", "60"))
+_ANALITICO_PAGE_DELAY_SECONDS = float(os.getenv("ANALITICO_PAGE_DELAY", "0.45"))
+ProgressCallback = Callable[[Dict[str, Any]], None]
 
 
 EXTRACTION_JSON_SCHEMA = {
@@ -916,25 +910,11 @@ def _extract_page_text(pdf_content: bytes, page_number: int, max_chars: int = 60
         return (pdf.pages[page_number - 1].extract_text() or "")[:max_chars]
 
 
-def _detect_budget_pages(pdf_content: bytes, max_pages: int = _MAX_FULL_PDF_PAGES) -> List[int]:
-    scored: List[Tuple[int, int]] = []
-    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
-        total = min(len(pdf.pages), max_pages)
-        for idx in range(total):
-            page_num = idx + 1
-            text = (pdf.pages[idx].extract_text() or "").lower()
-            if not text.strip():
-                continue
-            score = sum(1 for kw in _BUDGET_PAGE_KEYWORDS if kw in text)
-            if score > 0:
-                scored.append((page_num, score))
-
-    if scored:
-        scored.sort(key=lambda item: item[0])
-        return [page for page, _ in scored]
-
-    with pdfplumber.open(BytesIO(pdf_content)) as pdf:
-        return list(range(1, min(len(pdf.pages), max_pages) + 1))
+def _detect_budget_page_candidates(
+    pdf_content: bytes,
+    max_pages: int = _MAX_FULL_PDF_PAGES,
+) -> List[BudgetPageCandidate]:
+    return detect_budget_pages(pdf_content, max_pages=max_pages)
 
 
 async def _extract_analitico_from_page(
@@ -943,13 +923,16 @@ async def _extract_analitico_from_page(
     pdf_content: bytes,
     page_number: int,
     total_pages: int,
+    image_detail: str = "high",
 ) -> List[Dict[str, Any]]:
     page_text = _extract_page_text(pdf_content, page_number)
-    try:
-        base64_image = _pdf_page_to_base64_image(pdf_content, page_number)
-    except Exception as exc:
-        logger.warning("Imagem indisponível pág %s: %s", page_number, exc)
-        base64_image = None
+    base64_image: str | None = None
+    if image_detail != "text":
+        try:
+            base64_image = _pdf_page_to_base64_image(pdf_content, page_number)
+        except Exception as exc:
+            logger.warning("Imagem indisponível pág %s: %s", page_number, exc)
+            base64_image = None
 
     user_text = FULL_PDF_PAGE_USER_TEMPLATE.format(
         page=page_number,
@@ -957,6 +940,7 @@ async def _extract_analitico_from_page(
         text_snippet=page_text or "(sem texto extraído)",
     )
 
+    vision_detail = "high" if image_detail == "high" else "low"
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": FULL_PDF_ANALITICO_SYSTEM_PROMPT},
     ]
@@ -970,7 +954,7 @@ async def _extract_analitico_from_page(
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/jpeg;base64,{base64_image}",
-                            "detail": "high",
+                            "detail": vision_detail,
                         },
                     },
                 ],
@@ -1025,11 +1009,24 @@ def _extract_document_metadata(
     }
 
 
+def _emit_progress(
+    callback: Optional[ProgressCallback],
+    payload: Dict[str, Any],
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(payload)
+    except Exception as exc:
+        logger.debug("progress callback: %s", exc)
+
+
 async def process_full_pdf_analitico(
     pdf_content: bytes,
     *,
     filename: str | None = None,
     max_pages: int = _MAX_FULL_PDF_PAGES,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Processa o PDF inteiro página a página (sem seleção de tabelas).
@@ -1038,33 +1035,84 @@ async def process_full_pdf_analitico(
     _ensure_api_key()
     t0 = time.perf_counter()
     client = _get_client()
-    pages = _detect_budget_pages(pdf_content, max_pages=max_pages)
-    if not pages:
+    page_candidates = _detect_budget_page_candidates(pdf_content, max_pages=max_pages)
+    if not page_candidates:
         raise OpenAIServiceError(
             "Não foi possível ler páginas do PDF.",
             status_code=422,
             code="no_pages",
         )
 
+    total_pages = len(page_candidates)
+    _emit_progress(
+        progress_callback,
+        {
+            "phase": "started",
+            "pages_total": total_pages,
+            "pages_done": 0,
+            "current_page": None,
+            "message": f"Preparando análise de {total_pages} página(s)…",
+        },
+    )
+
     combined_hierarchical: List[Dict[str, Any]] = []
     pages_meta: List[Dict[str, Any]] = []
 
-    for page_num in pages:
+    for index, candidate in enumerate(page_candidates):
+        page_num = candidate.page_number
+        if index > 0 and _ANALITICO_PAGE_DELAY_SECONDS > 0:
+            await asyncio.sleep(_ANALITICO_PAGE_DELAY_SECONDS)
+
+        _emit_progress(
+            progress_callback,
+            {
+                "phase": "processing",
+                "pages_total": total_pages,
+                "pages_done": index,
+                "current_page": page_num,
+                "message": f"Analisando página {page_num} ({index + 1}/{total_pages})…",
+            },
+        )
+
         try:
             page_items = await _extract_analitico_from_page(
                 client,
                 pdf_content=pdf_content,
                 page_number=page_num,
-                total_pages=len(pages),
+                total_pages=total_pages,
+                image_detail=candidate.image_detail,
             )
             for item in page_items:
                 item["_source_page"] = page_num
             combined_hierarchical.extend(page_items)
-            pages_meta.append({"page": page_num, "items": len(page_items)})
-            logger.info("PDF analítico pág %s: %s linhas", page_num, len(page_items))
+            pages_meta.append(
+                {
+                    "page": page_num,
+                    "items": len(page_items),
+                    "image_detail": candidate.image_detail,
+                    "table_score": candidate.table_score,
+                }
+            )
+            logger.info(
+                "PDF analítico pág %s (%s): %s linhas",
+                page_num,
+                candidate.image_detail,
+                len(page_items),
+            )
         except Exception as exc:
             logger.warning("Falha ao extrair pág %s: %s", page_num, exc)
             pages_meta.append({"page": page_num, "items": 0, "error": str(exc)})
+
+        _emit_progress(
+            progress_callback,
+            {
+                "phase": "processing",
+                "pages_total": total_pages,
+                "pages_done": index + 1,
+                "current_page": page_num,
+                "message": f"Página {page_num} concluída ({index + 1}/{total_pages})",
+            },
+        )
 
     if not combined_hierarchical:
         raise OpenAIServiceError(
@@ -1090,7 +1138,8 @@ async def process_full_pdf_analitico(
         "total_items": len(normalized_items),
         "total_linhas": len(combined_hierarchical),
         "valor_total": valor_total,
-        "paginas_processadas": len(pages),
+        "paginas_processadas": total_pages,
+        "paginas_candidatas": [c.page_number for c in page_candidates],
         "confianca": 0.85,
         "metodo": f"{OPENAI_ORCAMENTO_MODEL} (full_pdf)",
         "metadata": metadata,
@@ -1108,7 +1157,10 @@ async def process_full_pdf_analitico(
         operation="process_full_pdf_analitico",
         provider="openai",
         model=OPENAI_ORCAMENTO_MODEL,
-        input_payload={"pages": pages, "filename": filename},
+        input_payload={
+            "pages": [c.page_number for c in page_candidates],
+            "filename": filename,
+        },
         output_payload={
             "hierarchical_count": len(combined_hierarchical),
             "executive_count": len(normalized_items),

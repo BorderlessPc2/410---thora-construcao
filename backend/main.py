@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
+import asyncio
 import uuid
 import os
 import logging
@@ -56,6 +57,13 @@ from services.openai_service import (
     OpenAIServiceError,
     _coerce_bdi,
     _coerce_number,
+)
+from services.analitico_job import (
+    complete_job,
+    fail_job,
+    get_job,
+    init_job,
+    make_progress_callback,
 )
 from services.report_pdf import build_analysis_pdf_bytes
 from services.ai_audit_logger import log_ai_exchange
@@ -1995,41 +2003,46 @@ async def process_orcamento_confirmed(
 
 class ProcessAnaliticoFullRequest(BaseModel):
     upload_id: str
+    force_reprocess: bool = False
 
 
-@app.post("/api/orcamentos/process-analitico-full")
-async def process_analitico_full_pdf(
-    payload: ProcessAnaliticoFullRequest,
-    user_id: str = Depends(get_current_user_id),
-):
-    """
-    Processa o PDF inteiro para Orçamento Analítico (sem seleção de tabelas).
-    A IA analisa página a página todo o conteúdo orçamentário do documento.
-    """
-    upload_id = _validate_upload_id(payload.upload_id)
-    file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
+def _cached_analitico_payload(upload_id: str) -> Dict[str, Any] | None:
+    """Retorna resposta pronta se o upload já tiver análise analítica em cache."""
+    data = _get_upload_data_from_sources(upload_id)
+    if not data:
+        return None
+    items_data = data.get("itemsData") or {}
+    hierarchical = items_data.get("hierarchical_items") or []
+    if not hierarchical:
+        return None
+    ia_meta = data.get("ia_metadata") or {}
+    combined_resumo = items_data.get("resumo") or ia_meta.get("combined_resumo") or {}
+    normalized_items = items_data.get("items") or []
+    filename = str(data.get("filename") or upload_id)
+    return {
+        "status": "success",
+        "upload_id": upload_id,
+        "document_id": data.get("document_id") or upload_id,
+        "filename": filename,
+        "items_found": len(normalized_items),
+        "hierarchical_items": hierarchical,
+        "structured_items": hierarchical,
+        "items": normalized_items,
+        "resumo": combined_resumo,
+        "ia_metadata": ia_meta,
+        "cached": True,
+        "message": f"✅ Resultado em cache — {len(hierarchical)} linhas hierárquicas",
+    }
 
-    meta = _load_upload_meta(upload_id)
-    expected_user = meta.get("userId")
-    if expected_user and str(expected_user) != str(user_id):
-        raise HTTPException(status_code=403, detail="Acesso negado")
-    if not expected_user and ENVIRONMENT != "development":
-        raise HTTPException(status_code=403, detail="Acesso negado")
 
-    filename = str(meta.get("filename") or file_path.name)
-    pdf_bytes = file_path.read_bytes()
-
-    try:
-        structured_data, provider_used = await process_full_pdf_analitico(
-            pdf_bytes,
-            filename=filename,
-        )
-    except OpenAIServiceError as exc:
-        status = getattr(exc, "status_code", 500) or 500
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
-
+def _persist_analitico_result(
+    *,
+    upload_id: str,
+    user_id: str,
+    filename: str,
+    structured_data: Dict[str, Any],
+    provider_used: str,
+) -> Dict[str, Any]:
     hierarchical_items = structured_data.get("hierarchical_items") or []
     normalized_items = structured_data.get("items") or []
     combined_resumo = structured_data.get("resumo") or {}
@@ -2066,6 +2079,7 @@ async def process_analitico_full_pdf(
         "resumo": combined_resumo,
     }
     _OFFLINE_CACHE[upload_id]["ia_metadata"] = ia_metadata_final
+    _OFFLINE_CACHE[upload_id]["filename"] = filename
     _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
 
     return {
@@ -2079,8 +2093,145 @@ async def process_analitico_full_pdf(
         "items": normalized_items,
         "resumo": combined_resumo,
         "ia_metadata": ia_metadata_final,
+        "cached": False,
         "message": f"✅ PDF analisado integralmente — {len(hierarchical_items)} linhas hierárquicas extraídas",
     }
+
+
+async def _run_analitico_full_job(
+    upload_id: str,
+    user_id: str,
+    filename: str,
+    pdf_bytes: bytes,
+) -> None:
+    try:
+        structured_data, provider_used = await process_full_pdf_analitico(
+            pdf_bytes,
+            filename=filename,
+            progress_callback=make_progress_callback(upload_id),
+        )
+        result = _persist_analitico_result(
+            upload_id=upload_id,
+            user_id=user_id,
+            filename=filename,
+            structured_data=structured_data,
+            provider_used=provider_used,
+        )
+        complete_job(upload_id, result)
+    except OpenAIServiceError as exc:
+        fail_job(upload_id, str(exc))
+    except Exception as exc:
+        logger.exception("process-analitico-full job %s", upload_id)
+        fail_job(upload_id, str(exc))
+
+
+@app.post("/api/orcamentos/process-analitico-full")
+async def process_analitico_full_pdf(
+    payload: ProcessAnaliticoFullRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Inicia processamento do PDF inteiro para Orçamento Analítico.
+    Retorna imediatamente com status processing; use GET .../status para progresso.
+    Se já houver cache, retorna o resultado completo (status success).
+    """
+    upload_id = _validate_upload_id(payload.upload_id)
+    file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
+
+    meta = _load_upload_meta(upload_id)
+    expected_user = meta.get("userId")
+    if expected_user and str(expected_user) != str(user_id):
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if not expected_user and ENVIRONMENT != "development":
+        raise HTTPException(status_code=403, detail="Acesso negado")
+
+    if not payload.force_reprocess:
+        cached = _cached_analitico_payload(upload_id)
+        if cached:
+            return cached
+
+    existing = get_job(upload_id)
+    if existing and existing.get("status") == "processing":
+        return {
+            "status": "processing",
+            "upload_id": upload_id,
+            "pages_total": existing.get("pages_total") or 0,
+            "pages_done": existing.get("pages_done") or 0,
+            "current_page": existing.get("current_page"),
+            "message": existing.get("message") or "Análise em andamento…",
+        }
+
+    init_job(upload_id)
+    filename = str(meta.get("filename") or file_path.name)
+    pdf_bytes = file_path.read_bytes()
+    asyncio.create_task(_run_analitico_full_job(upload_id, user_id, filename, pdf_bytes))
+
+    return {
+        "status": "processing",
+        "upload_id": upload_id,
+        "pages_total": 0,
+        "pages_done": 0,
+        "current_page": None,
+        "message": "Iniciando análise do PDF…",
+    }
+
+
+@app.get("/api/orcamentos/process-analitico-full/status/{upload_id}")
+async def process_analitico_full_status(
+    upload_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Consulta progresso ou resultado do processamento analítico integral."""
+    upload_id = _validate_upload_id(upload_id)
+    meta = _load_upload_meta(upload_id)
+    expected_user = meta.get("userId")
+    if expected_user and str(expected_user) != str(user_id):
+        raise HTTPException(status_code=403, detail="Acesso negado")
+    if not expected_user and ENVIRONMENT != "development":
+        raise HTTPException(status_code=403, detail="Acesso negado")
+
+    job = get_job(upload_id)
+    if job:
+        if job.get("status") == "completed" and job.get("result"):
+            return {
+                "status": "completed",
+                "upload_id": upload_id,
+                "pages_total": job.get("pages_total") or 0,
+                "pages_done": job.get("pages_done") or 0,
+                "message": job.get("message"),
+                "result": job["result"],
+            }
+        if job.get("status") == "failed":
+            return {
+                "status": "failed",
+                "upload_id": upload_id,
+                "error": job.get("error") or "Erro desconhecido",
+                "message": job.get("message"),
+            }
+        return {
+            "status": "processing",
+            "upload_id": upload_id,
+            "pages_total": job.get("pages_total") or 0,
+            "pages_done": job.get("pages_done") or 0,
+            "current_page": job.get("current_page"),
+            "message": job.get("message") or "Processando…",
+        }
+
+    cached = _cached_analitico_payload(upload_id)
+    if cached:
+        return {
+            "status": "completed",
+            "upload_id": upload_id,
+            "message": "Resultado em cache",
+            "result": cached,
+        }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Nenhum processamento em andamento para este upload.",
+    )
 
 
 # ============== ANALYZE WITH AI ==============

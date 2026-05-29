@@ -91,6 +91,7 @@ export function OrcamentoPdfWizard({
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [processingDetail, setProcessingDetail] = useState("");
+  const [progressPercent, setProgressPercent] = useState(0);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -101,6 +102,7 @@ export function OrcamentoPdfWizard({
       setSelectedTableIds([]);
       setErrorMessage("");
       setProcessingDetail("");
+      setProgressPercent(0);
     }
   }, []);
 
@@ -119,6 +121,7 @@ export function OrcamentoPdfWizard({
     setSelectedTableIds([]);
     setErrorMessage("");
     setProcessingDetail("");
+    setProgressPercent(0);
     setPhase("pick_file");
   };
 
@@ -157,6 +160,7 @@ export function OrcamentoPdfWizard({
     if (!file) return;
     setErrorMessage("");
     setProcessingDetail("");
+    setProgressPercent(0);
 
     try {
       setPhase("uploading");
@@ -165,15 +169,35 @@ export function OrcamentoPdfWizard({
       setUploadId(currentUploadId);
 
       setPhase("processing_ai");
-      setProcessingDetail("Lendo todo o conteúdo do PDF página a página…");
+      setProcessingDetail("Identificando páginas com planilha orçamentária…");
+      setProgressPercent(2);
       console.info(`[${logTag}] Processamento integral do PDF:`, currentUploadId);
 
-      const result = await processAnaliticoFullPdf(currentUploadId);
+      const result = await processAnaliticoFullPdf(currentUploadId, {
+        onProgress: (update) => {
+          const total = update.pages_total || 0;
+          const done = update.pages_done || 0;
+          if (total > 0) {
+            const pct = Math.min(98, Math.round((done / total) * 100));
+            setProgressPercent(pct);
+            setProcessingDetail(
+              update.message ??
+                `Analisando página ${update.current_page ?? done} (${done}/${total})…`,
+            );
+          } else if (update.message) {
+            setProcessingDetail(update.message);
+            setProgressPercent((prev) => Math.max(prev, 5));
+          }
+        },
+      });
+      setProgressPercent(100);
       const pages = (result.resumo?.paginas_processadas as number | undefined) ?? 0;
       setProcessingDetail(
-        pages > 0
-          ? `${pages} página(s) analisadas — montando planilha hierárquica…`
-          : "Montando planilha hierárquica…",
+        result.cached
+          ? "Resultado recuperado do cache — montando planilha…"
+          : pages > 0
+            ? `${pages} página(s) analisadas — montando planilha hierárquica…`
+            : "Montando planilha hierárquica…",
       );
       await finishWithResult(currentUploadId, result);
     } catch (error: unknown) {
@@ -378,8 +402,14 @@ export function OrcamentoPdfWizard({
                   <p className="mb-2 text-xs text-slate-500">{processingDetail}</p>
                 ) : null}
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-                  <div className="h-full w-full animate-pulse rounded-full bg-blue-600" />
+                  <div
+                    className="h-full rounded-full bg-blue-600 transition-all duration-500 ease-out"
+                    style={{ width: `${Math.max(progressPercent, 3)}%` }}
+                  />
                 </div>
+                {progressPercent > 0 ? (
+                  <p className="mt-1 text-right text-xs text-slate-400">{progressPercent}%</p>
+                ) : null}
               </div>
             )}
 

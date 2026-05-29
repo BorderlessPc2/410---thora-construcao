@@ -169,36 +169,116 @@ export const detectOrcamentoTables = async (uploadId: string) => {
   }
 };
 
-/** Processa o PDF inteiro para Orçamento Analítico (sem seleção de tabelas). */
-export const processAnaliticoFullPdf = async (uploadId: string) => {
+export type AnaliticoFullPdfResult = {
+  status: string;
+  upload_id: string;
+  document_id: string | null;
+  filename: string;
+  items_found: number;
+  hierarchical_items: unknown[];
+  structured_items?: unknown[];
+  items: unknown[];
+  resumo: Record<string, unknown>;
+  ia_metadata?: Record<string, unknown>;
+  message: string;
+  cached?: boolean;
+};
+
+export type AnaliticoProgressUpdate = {
+  status: "processing" | "completed" | "failed";
+  upload_id: string;
+  pages_total: number;
+  pages_done: number;
+  current_page?: number | null;
+  message?: string;
+  error?: string;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parseApiError = (error: unknown, fallback: string): string => {
+  const err = error as { response?: { data?: { detail?: unknown } } };
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d: { msg?: string }) => d?.msg).join("; ") || fallback;
+  }
+  return fallback;
+};
+
+/** Processa o PDF inteiro para Orçamento Analítico (assíncrono + polling de progresso). */
+export const processAnaliticoFullPdf = async (
+  uploadId: string,
+  options?: {
+    forceReprocess?: boolean;
+    onProgress?: (update: AnaliticoProgressUpdate) => void;
+    pollIntervalMs?: number;
+  },
+): Promise<AnaliticoFullPdfResult> => {
+  const pollIntervalMs = options?.pollIntervalMs ?? 1500;
+
   try {
-    const response = await apiClient.post(
+    const startResponse = await apiClient.post(
       "/api/orcamentos/process-analitico-full",
-      { upload_id: uploadId },
-      { timeout: 900000 },
+      {
+        upload_id: uploadId,
+        force_reprocess: Boolean(options?.forceReprocess),
+      },
+      { timeout: 120000 },
     );
-    return response.data as {
+
+    const startData = startResponse.data as AnaliticoFullPdfResult & {
       status: string;
-      upload_id: string;
-      document_id: string | null;
-      filename: string;
-      items_found: number;
-      hierarchical_items: unknown[];
-      structured_items?: unknown[];
-      items: unknown[];
-      resumo: Record<string, unknown>;
-      ia_metadata?: Record<string, unknown>;
-      message: string;
+      hierarchical_items?: unknown[];
     };
-  } catch (error: any) {
-    const detail = error.response?.data?.detail;
-    const msg =
-      typeof detail === "string"
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
-          : "Erro ao processar PDF completo";
-    throw new Error(msg || "Erro ao processar PDF completo");
+
+    if (startData.status === "success" && Array.isArray(startData.hierarchical_items)) {
+      return startData;
+    }
+
+    if (startData.status !== "processing") {
+      return startData as AnaliticoFullPdfResult;
+    }
+
+    const processingStart = startData as AnaliticoProgressUpdate;
+    options?.onProgress?.({
+      status: "processing",
+      upload_id: uploadId,
+      pages_total: processingStart.pages_total ?? 0,
+      pages_done: processingStart.pages_done ?? 0,
+      message: startData.message ?? "Iniciando análise…",
+    });
+
+    for (;;) {
+      await sleep(pollIntervalMs);
+      const statusResponse = await apiClient.get(
+        `/api/orcamentos/process-analitico-full/status/${uploadId}`,
+        { timeout: 30000 },
+      );
+      const statusData = statusResponse.data as AnaliticoProgressUpdate & {
+        result?: AnaliticoFullPdfResult;
+      };
+
+      if (statusData.status === "processing") {
+        options?.onProgress?.(statusData);
+        continue;
+      }
+
+      if (statusData.status === "completed" && statusData.result) {
+        options?.onProgress?.({
+          ...statusData,
+          pages_done: statusData.pages_total || statusData.pages_done,
+          message: statusData.message ?? "Análise concluída",
+        });
+        return statusData.result;
+      }
+
+      if (statusData.status === "failed") {
+        throw new Error(statusData.error || "Erro ao processar PDF completo");
+      }
+    }
+  } catch (error: unknown) {
+    throw new Error(parseApiError(error, "Erro ao processar PDF completo"));
   }
 };
 
