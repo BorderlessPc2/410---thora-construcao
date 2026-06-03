@@ -32,21 +32,21 @@ _GENERIC_UNCODED_PHANTOM_PREFIXES = (
 )
 
 
-def _coerce_number(value: Any) -> float:
+def parse_numeric(value: Any) -> float:
+    """Remove pontos de milhar e troca vírgula decimal por ponto (pt-BR)."""
     if value is None or value == "":
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    text = str(value).strip()
-    text = text.replace("R$", "").replace("$", "").replace(" ", "")
-    if "." in text and "," in text:
-        text = text.replace(".", "").replace(",", ".")
-    elif "," in text and "." not in text:
-        text = text.replace(",", ".")
+    clean_str = str(value).replace(".", "").replace(",", ".")
     try:
-        return float(text)
-    except (TypeError, ValueError):
+        return float(clean_str)
+    except ValueError:
         return 0.0
+
+
+def _coerce_number(value: Any) -> float:
+    return parse_numeric(value)
 
 
 def _coerce_bdi(value: Any) -> float:
@@ -104,10 +104,10 @@ def filter_faithful_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def classify_tipo_linha(row: Dict[str, Any]) -> str:
     """
     Sem valor_unitario (vazio/null/zero) E sem quantidade → grupo.
-    Unidade é ignorada na classificação.
+    Unidade é ignorada na classificação. Nunca retorna vazio/None.
     """
-    quantidade = _coerce_number(row.get("quantidade") or row.get("qty"))
-    valor_unitario = _coerce_number(
+    quantidade = parse_numeric(row.get("quantidade") or row.get("qty"))
+    valor_unitario = parse_numeric(
         row.get("valor_unitario")
         or row.get("valor_unitário")
         or row.get("unitPrice")
@@ -118,9 +118,70 @@ def classify_tipo_linha(row: Dict[str, Any]) -> str:
         return "grupo"
 
     tipo_atual = str(row.get("tipo_linha") or row.get("tipo") or "item").strip().lower()
+    if not tipo_atual or tipo_atual in ("none", "null"):
+        tipo_atual = "item"
     if tipo_atual in ("composicao", "composição", "insumo", "subitem"):
         return "composicao"
     return "item"
+
+
+def force_grupo_typing(row: Dict[str, Any]) -> str:
+    """Garante tipo_linha/tipo como string explícita ('grupo', 'item' ou 'composicao')."""
+    tipo = classify_tipo_linha(row)
+    row["tipo_linha"] = tipo
+    row["tipo"] = tipo
+
+    if tipo == "grupo":
+        row["quantidade"] = 0.0
+        row["qty"] = 0.0
+        row["valor_unitario"] = 0.0
+        row["unitPrice"] = 0.0
+        row["unit_com_bdi"] = 0.0
+    return tipo
+
+
+def _apply_grupo_total(rows: List[Dict[str, Any]], index: int, total: float) -> None:
+    if index < 0 or index >= len(rows):
+        return
+    row = rows[index]
+    rounded = round(float(total), 2)
+    row["valor_total"] = rounded
+    row["total_com_bdi"] = rounded
+    row["totalValue"] = rounded
+    row["tipo_linha"] = "grupo"
+    row["tipo"] = "grupo"
+    row["quantidade"] = 0.0
+    row["qty"] = 0.0
+    row["valor_unitario"] = 0.0
+    row["unitPrice"] = 0.0
+    row["unit_com_bdi"] = 0.0
+    row["unidade"] = ""
+    row["unit"] = ""
+
+
+def accumulate_grupo_totals_bottom_up(rows: List[Dict[str, Any]]) -> None:
+    """
+    Soma bottom-up: ao encontrar grupo, fecha o anterior; itens alimentam soma_grupo.
+    Usa parse_numeric para evitar concatenação de strings formatadas (pt-BR).
+    """
+    grupo_atual_index = -1
+    soma_grupo = 0.0
+
+    for i, row in enumerate(rows):
+        tipo = force_grupo_typing(row)
+
+        if tipo == "grupo":
+            if grupo_atual_index >= 0:
+                _apply_grupo_total(rows, grupo_atual_index, soma_grupo)
+            grupo_atual_index = i
+            soma_grupo = 0.0
+            continue
+
+        apply_item_totals(row)
+        soma_grupo += parse_numeric(row.get("valor_total") or 0)
+
+    if grupo_atual_index >= 0:
+        _apply_grupo_total(rows, grupo_atual_index, soma_grupo)
 
 
 def extract_group_prefix(row: Dict[str, Any]) -> Optional[str]:
@@ -210,23 +271,60 @@ def assign_hierarchical_numbers(rows: List[Dict[str, Any]]) -> None:
 
 
 def rollup_group_totals(rows: List[Dict[str, Any]]) -> None:
-    for i in range(len(rows) - 1, -1, -1):
-        if str(rows[i].get("tipo_linha")) != "grupo":
+    """Alias — delega ao laço bottom-up com parse_numeric."""
+    accumulate_grupo_totals_bottom_up(rows)
+
+
+SINTETICO_MAX_DESCRICAO_GRUPO = 100
+
+
+def _row_valor_total(row: Dict[str, Any]) -> float:
+    return parse_numeric(row.get("valor_total") or row.get("total_com_bdi") or 0)
+
+
+def is_legitimate_sintetico_grupo(row: Dict[str, Any]) -> bool:
+    """Filtra cláusulas longas e grupos sem total consolidado."""
+    if str(row.get("tipo_linha") or "").lower() != "grupo":
+        return False
+    desc = _row_descricao(row)
+    if len(desc) > SINTETICO_MAX_DESCRICAO_GRUPO:
+        return False
+    return _row_valor_total(row) > 0.0
+
+
+def calcular_totais_sinteticos(rows: List[Dict[str, Any]]) -> None:
+    """Reconsolida totais de grupo (bottom-up + parse_numeric)."""
+    accumulate_grupo_totals_bottom_up(rows)
+
+
+def build_sintetico_grupo_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Grupos pai consolidados e sanitizados para exportação sintética."""
+    if not items:
+        return []
+
+    payload: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(items):
+        if not isinstance(raw, dict):
             continue
-        total = 0.0
-        for j in range(i + 1, len(rows)):
-            if str(rows[j].get("tipo_linha")) == "grupo":
-                break
-            total += _coerce_number(rows[j].get("valor_total"))
-        rows[i]["valor_total"] = round(total, 2)
-        rows[i]["total_com_bdi"] = rows[i]["valor_total"]
-        rows[i]["quantidade"] = 0.0
-        rows[i]["qty"] = 0.0
-        rows[i]["valor_unitario"] = 0.0
-        rows[i]["unitPrice"] = 0.0
-        rows[i]["unit_com_bdi"] = 0.0
-        rows[i]["unidade"] = ""
-        rows[i]["unit"] = ""
+        payload.append({**raw, "_order": idx})
+
+    normalized = normalize_hierarchical_analitico(payload)
+    calcular_totais_sinteticos(normalized)
+
+    sintetico: List[Dict[str, Any]] = []
+    for row in normalized:
+        if not is_legitimate_sintetico_grupo(row):
+            continue
+        total = _row_valor_total(row)
+        sintetico.append(
+            {
+                "item_numero": str(row.get("item_numero") or row.get("item") or "").strip(),
+                "descricao": _row_descricao(row),
+                "valor_total": total,
+                "total_com_bdi": total,
+            }
+        )
+    return sintetico
 
 
 def normalize_hierarchical_analitico(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -236,27 +334,19 @@ def normalize_hierarchical_analitico(items: List[Dict[str, Any]]) -> List[Dict[s
     rows: List[Dict[str, Any]] = []
     for raw in filter_faithful_rows(items):
         row = dict(raw)
-        tipo = classify_tipo_linha(row)
-        row["tipo_linha"] = tipo
-        row["tipo"] = tipo
+        force_grupo_typing(row)
 
-        if tipo == "grupo":
-            row["quantidade"] = 0.0
-            row["qty"] = 0.0
-            row["valor_unitario"] = 0.0
-            row["unitPrice"] = 0.0
-            row["unit_com_bdi"] = 0.0
-        else:
+        if str(row.get("tipo_linha")) != "grupo":
             unidade = str(row.get("unidade") or row.get("unit") or "").strip()
             row["unidade"] = unidade or "un"
             row["unit"] = row["unidade"]
+            apply_item_totals(row)
 
-        apply_item_totals(row)
         rows.append(row)
 
     assign_hierarchical_numbers(rows)
     for row in rows:
         if str(row.get("tipo_linha")) != "grupo":
             apply_item_totals(row)
-    rollup_group_totals(rows)
+    accumulate_grupo_totals_bottom_up(rows)
     return rows

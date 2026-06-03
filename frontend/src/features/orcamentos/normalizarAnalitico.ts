@@ -1,4 +1,5 @@
 import type { LinhaAnalitica } from "./orcamentoAnalitico";
+import { parseNumeric } from "./parseNumeric";
 import { parseEditableNumber } from "./recalcularCurvaABC";
 
 const HALLUCINATION_PATTERNS = [
@@ -126,7 +127,7 @@ export function normalizarLinhasAnaliticas(linhas: LinhaAnalitica[]): LinhaAnali
     if (rows[i].tipoLinha !== "grupo") continue;
     let sum = 0;
     for (let j = i + 1; j < rows.length && rows[j].tipoLinha !== "grupo"; j += 1) {
-      sum += rows[j].valorTotal;
+      sum += parseNumeric(rows[j].valorTotal);
     }
     rows[i].valorTotal = Math.round(sum * 100) / 100;
   }
@@ -182,7 +183,7 @@ export function mapRawToLinhaAnaliticaNormalizada(raw: unknown, index: number): 
 
   if (isHallucinatedRow(linha)) return null;
 
-  const valorTotalExplicit = parseEditableNumber(
+  const valorTotalExplicit = parseNumeric(
     item.valor_total ?? item.totalValue ?? item.lineTotal ?? item.total_com_bdi,
   );
   linha.valorTotal = computeValorTotalLinha(

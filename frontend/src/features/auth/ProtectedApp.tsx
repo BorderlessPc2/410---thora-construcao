@@ -2,6 +2,7 @@ import React from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import SidebarLayout from "../../components/SidebarLayout";
+import { OrcamentoLinhasProvider } from "../orcamentos/OrcamentoLinhasContext";
 
 export const ProtectedApp: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -22,9 +23,11 @@ export const ProtectedApp: React.FC = () => {
   }
 
   return (
-    <SidebarLayout>
-      <Outlet />
-    </SidebarLayout>
+    <OrcamentoLinhasProvider>
+      <SidebarLayout>
+        <Outlet />
+      </SidebarLayout>
+    </OrcamentoLinhasProvider>
   );
 };
 

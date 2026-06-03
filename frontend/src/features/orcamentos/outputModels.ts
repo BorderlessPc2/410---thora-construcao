@@ -15,6 +15,13 @@ export const ANALITICO_ONLY: OutputModelsSelection = {
   curva_abc: false,
 };
 
+/** Apenas Orçamento Sintético (resumo por grupos). */
+export const SINTETICO_ONLY: OutputModelsSelection = {
+  analitico: false,
+  sintetico: true,
+  curva_abc: false,
+};
+
 /** Único modelo ativo no fluxo atual (Curva ABC). */
 export const CURVA_ABC_ONLY: OutputModelsSelection = {
   analitico: false,

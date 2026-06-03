@@ -31,6 +31,7 @@ import {
 } from "../features/orcamentos/recalcularAnaliticoHierarquico";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
 import { ANALITICO_ONLY } from "../features/orcamentos/outputModels";
+import { useOrcamentoLinhasContext } from "../features/orcamentos/OrcamentoLinhasContext";
 import { btnAccent, btnMuted } from "../components/ui/buttonClasses";
 
 const formatMoney = (value: number) =>
@@ -64,6 +65,7 @@ const OrcamentoAnalitico: React.FC = () => {
     flowState?.nomeProjeto ?? "Orçamento",
   );
   const [wizardKey, setWizardKey] = useState(0);
+  const { setOrcamentoLinhas, clearOrcamentoLinhas } = useOrcamentoLinhasContext();
 
   const applyHierarchicalData = useCallback(
     (rawItems: unknown[], uploadId?: string, filename?: string) => {
@@ -73,10 +75,21 @@ const OrcamentoAnalitico: React.FC = () => {
       setViewMode("results");
       if (uploadId) setCurrentUploadId(uploadId);
       if (filename) setNomeProjeto(filename.replace(/\.pdf$/i, ""));
+      setOrcamentoLinhas({
+        linhas: mapped,
+        uploadId: uploadId ?? null,
+        nomeProjeto: filename ? filename.replace(/\.pdf$/i, "") : "Orçamento",
+      });
       return true;
     },
-    [],
+    [setOrcamentoLinhas],
   );
+
+  useEffect(() => {
+    if (linhas.length > 0) {
+      setOrcamentoLinhas({ linhas, uploadId: currentUploadId, nomeProjeto });
+    }
+  }, [linhas, currentUploadId, nomeProjeto, setOrcamentoLinhas]);
 
   useEffect(() => {
     const load = async () => {
@@ -180,6 +193,7 @@ const OrcamentoAnalitico: React.FC = () => {
     setLinhas([]);
     setCurrentUploadId(null);
     setNomeProjeto("Orçamento");
+    clearOrcamentoLinhas();
     setViewMode("wizard");
     setWizardKey((k) => k + 1);
     navigate("/orcamento-analitico", { replace: true, state: null });
@@ -256,6 +270,15 @@ const OrcamentoAnalitico: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {currentUploadId && (
+              <button
+                type="button"
+                className={btnMuted}
+                onClick={() => navigate(`/orcamento-sintetico/${currentUploadId}`)}
+              >
+                Ver Sintético
+              </button>
+            )}
             <button type="button" onClick={handleNovaAnalise} className={btnMuted}>
               <Plus className="h-4 w-4" />
               Nova análise

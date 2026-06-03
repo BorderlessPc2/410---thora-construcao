@@ -9,7 +9,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from services.analitico_normalize import normalize_hierarchical_analitico
+from services.analitico_normalize import (
+    build_sintetico_grupo_rows,
+    classify_tipo_linha,
+    normalize_hierarchical_analitico,
+    parse_numeric,
+)
 from services.openai_service import _coerce_bdi, _coerce_number
 
 try:
@@ -142,16 +147,23 @@ def prepare_hierarchical_analitico_rows(items: List[Dict[str, Any]]) -> List[Dic
         base["rotulo_linha"] = str(row.get("rotulo_linha") or "").strip()
         base["tipo_categoria"] = str(row.get("tipo_categoria") or "").strip()
         base["porcentagem"] = _coerce_number(row.get("porcentagem") or 0)
-        base["tipo_linha"] = str(row.get("tipo_linha") or "item")
+        tipo_linha = str(row.get("tipo_linha") or row.get("tipo") or "").strip().lower()
+        if not tipo_linha or tipo_linha in ("none", "null"):
+            tipo_linha = classify_tipo_linha(row)
+        base["tipo_linha"] = tipo_linha
+        base["tipo"] = tipo_linha
         base["banco"] = str(row.get("banco") or "").strip()
         base["qty"] = _coerce_number(row.get("quantidade") or row.get("qty"))
         base["unit"] = str(row.get("unidade") or row.get("unit") or "").strip()
         base["unit_com_bdi"] = _coerce_number(
             row.get("valor_unitario") or row.get("unit_com_bdi")
         )
-        base["total_com_bdi"] = _coerce_number(
-            row.get("valor_total") or row.get("total_com_bdi")
-        )
+        total_linha = parse_numeric(row.get("valor_total") or row.get("total_com_bdi"))
+        if total_linha <= 0:
+            total_linha = parse_numeric(base.get("total_com_bdi"))
+        base["total_com_bdi"] = total_linha
+        base["valor_total"] = total_linha
+        base["totalValue"] = total_linha
         base["code"] = str(row.get("codigo") or row.get("code") or "").strip()
         base["description"] = str(row.get("descricao") or row.get("description") or "").strip()
         base["_order"] = row.get("_order")
@@ -256,51 +268,8 @@ def prepare_curva_abc_rows(items: List[Dict[str, Any]]) -> Tuple[List[Dict[str, 
 
 
 def prepare_sintetico_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Linhas de grupo/título com totais; sem itens executivos filhos."""
-    sintetico: List[Dict[str, Any]] = []
-
-    for raw in items:
-        if not isinstance(raw, dict) or not _is_group_row(raw):
-            continue
-        row = _normalize_base_row(raw)
-        if row["total_com_bdi"] <= 0:
-            grupo_key = row["description"] or row["code"]
-            row["total_com_bdi"] = sum(
-                _line_total_com_bdi(r)
-                for r in items
-                if isinstance(r, dict)
-                and _is_executive_row(r)
-                and str(r.get("grupo") or "").strip() == grupo_key
-            )
-        sintetico.append(row)
-
-    if sintetico:
-        return sintetico
-
-    totals_by_grupo: Dict[str, float] = {}
-    labels_by_grupo: Dict[str, str] = {}
-    for raw in items:
-        if not isinstance(raw, dict) or not _is_executive_row(raw):
-            continue
-        key = str(raw.get("grupo") or "Geral").strip() or "Geral"
-        totals_by_grupo[key] = totals_by_grupo.get(key, 0.0) + _line_total_com_bdi(raw)
-        labels_by_grupo[key] = key
-
-    for key, total in totals_by_grupo.items():
-        sintetico.append(
-            {
-                "code": "",
-                "description": labels_by_grupo.get(key, key),
-                "bdi": 0.0,
-                "unit": "",
-                "qty": 0.0,
-                "unit_com_bdi": 0.0,
-                "total_com_bdi": total,
-                "grupo": key,
-            }
-        )
-
-    return sintetico
+    """Apenas grupos pai legítimos com totais consolidados (float estrito)."""
+    return build_sintetico_grupo_rows(items)
 
 
 def _write_header_row(ws, headers: List[str]) -> None:
@@ -618,42 +587,74 @@ def _fill_curva_abc_sheet(ws, rows: List[Dict[str, Any]], total_geral: float) ->
     )
 
 
-def _fill_sintetico_sheet(ws, rows: List[Dict[str, Any]]) -> None:
-    headers = ["Código", "Grupo / Etapa", "Valor Total C/BDI"]
-    _write_header_row(ws, headers)
+def gerar_aba_sintetica(
+    ws,
+    rows: List[Dict[str, Any]],
+    *,
+    nome_obra: str | None = None,
+) -> None:
+    """Orçamento Sintético — Item | Descrição do Grupo | Valor Total C/ BDI."""
+    meta_end = _write_novacap_metadata_header(ws, nome_obra=nome_obra)
+    title_cell = ws.cell(row=3, column=1)
+    title_cell.value = "Orçamento Sintético — Resumo Gerencial"
+    title_cell.font = Font(bold=True, size=12)
+
+    header_row = meta_end
+    headers = ["Item", "Descrição do Grupo", "Valor Total C/ BDI"]
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col_num)
+        cell.value = header
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+
+    data_start = header_row + 1
     total_geral = 0.0
 
     for idx, row_data in enumerate(rows):
-        row_num = idx + 2
-        stripe = ZEBRA_LIGHT if idx % 2 == 0 else ZEBRA_WHITE
-        values = [
-            row_data["code"],
-            row_data["description"],
-            row_data["total_com_bdi"],
-        ]
+        row_num = data_start + idx
+        item_num = str(row_data.get("item_numero") or row_data.get("item") or "").strip()
+        descricao = str(
+            row_data.get("descricao") or row_data.get("description") or ""
+        ).strip()
+        total_val = parse_numeric(
+            row_data.get("valor_total") or row_data.get("total_com_bdi") or 0
+        )
+        total_geral += total_val
+
+        values = [item_num, descricao, total_val]
         for col_num, value in enumerate(values, 1):
             cell = ws.cell(row=row_num, column=col_num)
             cell.value = value
+            cell.font = GROUP_FONT
+            cell.fill = ANALITICO_GROUP_FILL
             cell.border = THIN_BORDER
-            cell.fill = stripe
             if col_num == 3:
                 cell.number_format = "#,##0.00"
                 cell.alignment = Alignment(horizontal="right", vertical="center")
+            elif col_num == 1:
+                cell.alignment = Alignment(horizontal="center", vertical="center")
             else:
-                cell.alignment = Alignment(horizontal="left", vertical="center")
-        total_geral += row_data["total_com_bdi"]
+                cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
-    total_row = len(rows) + 3
+    total_row = data_start + len(rows) + 1
     ws.cell(row=total_row, column=2).value = "TOTAL GERAL:"
     ws.cell(row=total_row, column=2).font = TOTAL_FONT
     ws.cell(row=total_row, column=2).alignment = Alignment(horizontal="right")
-    ws.cell(row=total_row, column=3).value = total_geral
-    ws.cell(row=total_row, column=3).number_format = "#,##0.00"
-    ws.cell(row=total_row, column=3).fill = TOTAL_FILL
-    ws.cell(row=total_row, column=3).font = TOTAL_FONT
-    ws.cell(row=total_row, column=3).border = THIN_BORDER
+    total_cell = ws.cell(row=total_row, column=3)
+    total_cell.value = total_geral
+    total_cell.number_format = "#,##0.00"
+    total_cell.fill = TOTAL_FILL
+    total_cell.font = TOTAL_FONT
+    total_cell.border = THIN_BORDER
 
+    ws.freeze_panes = f"A{data_start}"
     _apply_col_widths(ws, {"A": 14, "B": 56, "C": 20})
+
+
+def _fill_sintetico_sheet(ws, rows: List[Dict[str, Any]]) -> None:
+    gerar_aba_sintetica(ws, rows)
 
 
 def build_export_workbook(
@@ -691,7 +692,7 @@ def build_export_workbook(
         sintetico_rows = prepare_sintetico_rows(items)
         if sintetico_rows:
             ws = wb.create_sheet("Orçamento Sintético")
-            _fill_sintetico_sheet(ws, sintetico_rows)
+            gerar_aba_sintetica(ws, sintetico_rows, nome_obra=nome_projeto)
             sheets_created.append("Orçamento Sintético")
 
     if not sheets_created:

@@ -4,6 +4,7 @@ import NovoOrcamento from "./pages/NovoOrcamento";
 import ValidacaoOrcamento from "./pages/ValidacaoOrcamento";
 import CurvaABC from "./pages/CurvaABC";
 import OrcamentoAnalitico from "./pages/OrcamentoAnalitico";
+import OrcamentoSintetico from "./pages/OrcamentoSintetico";
 import Reports from "./pages/Reports";
 import AnaliseDetalhada from "./pages/AnaliseDetalhada";
 import Login from "./pages/Login";
@@ -26,6 +27,8 @@ const App = () => {
         <Route path="/curva-abc/:uploadId" element={<CurvaABC />} />
         <Route path="/orcamento-analitico/:uploadId" element={<OrcamentoAnalitico />} />
         <Route path="/orcamento-analitico" element={<OrcamentoAnalitico />} />
+        <Route path="/orcamento-sintetico/:uploadId" element={<OrcamentoSintetico />} />
+        <Route path="/orcamento-sintetico" element={<OrcamentoSintetico />} />
         <Route
           path="/analise-detalhada/:uploadId"
           element={<AnaliseDetalhada />}
