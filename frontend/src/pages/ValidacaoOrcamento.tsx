@@ -218,6 +218,11 @@ const mapStoredItemsToValidation = (rawItems: unknown[]): ItemOrcamento[] => {
         typeof item.accumulated_percentage === "number"
           ? item.accumulated_percentage
           : undefined,
+      extractionConfidence:
+        typeof item.confianca === "number" ? item.confianca : undefined,
+      extractionAlerts: Array.isArray(item.alertas)
+        ? (item.alertas as string[])
+        : undefined,
     });
   }
 
@@ -1380,26 +1385,40 @@ export default function ValidacaoOrcamento() {
                           )}
                         </td>
                         <td className="min-w-[14rem] max-w-[24rem] px-3 py-2 align-top">
-                          <input
-                            type="text"
-                            value={item.description}
-                            onChange={(e) =>
-                              handleChange(
-                                item.id,
-                                "description",
-                                e.target.value,
-                              )
-                            }
-                            className={`w-full min-w-[12rem] bg-transparent text-sm leading-snug focus:outline-none border-b border-transparent focus:border-blue-500 ${
-                              item.classification === "A"
-                                ? "text-red-900"
-                                : item.classification === "B"
-                                  ? "text-yellow-900"
-                                  : item.classification === "C"
-                                    ? "text-emerald-900"
-                                    : "text-slate-800"
-                            }`}
-                          />
+                          <div className="flex items-start gap-1">
+                            {item.extractionAlerts && item.extractionAlerts.length > 0 ? (
+                              <span
+                                className="mt-0.5 shrink-0 text-amber-500"
+                                title={item.extractionAlerts.join(" · ")}
+                              >
+                                <AlertCircle className="h-4 w-4" aria-hidden="true" />
+                              </span>
+                            ) : null}
+                            <input
+                              type="text"
+                              value={item.description}
+                              onChange={(e) =>
+                                handleChange(
+                                  item.id,
+                                  "description",
+                                  e.target.value,
+                                )
+                              }
+                              className={`w-full min-w-[12rem] bg-transparent text-sm leading-snug focus:outline-none border-b border-transparent focus:border-blue-500 ${
+                                item.extractionAlerts && item.extractionAlerts.length > 0
+                                  ? "border-amber-200"
+                                  : ""
+                              } ${
+                                item.classification === "A"
+                                  ? "text-red-900"
+                                  : item.classification === "B"
+                                    ? "text-yellow-900"
+                                    : item.classification === "C"
+                                      ? "text-emerald-900"
+                                      : "text-slate-800"
+                              }`}
+                            />
+                          </div>
                         </td>
                         <td className="min-w-[4.5rem] px-3 py-2 align-top">
                           {editable ? (

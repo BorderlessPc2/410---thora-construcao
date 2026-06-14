@@ -31,9 +31,11 @@ function statusLabel(item: AbcAnalysisJob): string {
         ? `Na fila (#${item.queue_position})`
         : "Na fila";
     case "processing":
-      return item.message ?? "IA montando Curva ABC…";
+      return item.message ?? "Análise em segundo plano — IA montando Curva ABC…";
     case "completed":
-      return "Concluído — clique para validar";
+      return item.items_found
+        ? `Concluído — ${item.items_found} item(ns). Clique para revisar PDF e dados.`
+        : "Concluído — clique para revisar PDF e dados";
     case "failed":
       return item.error ?? item.message ?? "Falhou";
     default:
@@ -72,9 +74,10 @@ export function AbcAnalysisList({
     return (
       <div className="rounded-xl border border-dashed border-slate-200 bg-white p-10 text-center">
         <FileText className="mx-auto h-10 w-10 text-slate-300" aria-hidden="true" />
-        <p className="mt-3 text-sm text-slate-500">Nenhuma análise em andamento.</p>
+        <p className="mt-3 text-sm text-slate-500">Nenhuma análise ainda.</p>
         <p className="mt-1 text-xs text-slate-400">
-          Envie dois ou mais PDFs na Curva ABC para enfileirar análises aqui.
+          Envie um ou mais PDFs na Curva ABC. Análises em segundo plano e concluídas ficam salvas
+          aqui para você abrir quando quiser.
         </p>
       </div>
     );
@@ -89,11 +92,12 @@ export function AbcAnalysisList({
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-5 py-4">
-        <h2 className="text-base font-semibold text-slate-900">Análises em andamento</h2>
+        <h2 className="text-base font-semibold text-slate-900">Suas análises</h2>
         <p className="mt-1 text-sm text-slate-500">
-          {completedCount}/{items.length} concluída(s)
-          {activeCount > 0 ? ` · ${activeCount} processando` : ""}
-          {awaitingCount > 0 ? ` · ${awaitingCount} aguardando sua escolha` : ""}
+          {items.length} análise(s) salva(s)
+          {completedCount > 0 ? ` · ${completedCount} concluída(s)` : ""}
+          {activeCount > 0 ? ` · ${activeCount} em segundo plano` : ""}
+          {awaitingCount > 0 ? ` · ${awaitingCount} aguardando tabela` : ""}
         </p>
       </div>
 
@@ -101,6 +105,9 @@ export function AbcAnalysisList({
         {items.map((item) => {
           const isAwaiting = item.status === "awaiting_selection";
           const isCompleted = item.status === "completed";
+          const isProcessing = ["uploading", "detecting", "queued", "processing"].includes(
+            item.status,
+          );
           const isClickable =
             (isAwaiting && Boolean(onSelectAwaiting)) ||
             (isCompleted && Boolean(onSelectCompleted));
@@ -121,7 +128,19 @@ export function AbcAnalysisList({
               >
                 <StatusIcon status={item.status} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-slate-900">{item.filename}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate font-medium text-slate-900">{item.filename}</p>
+                    {isProcessing ? (
+                      <span className="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+                        Em andamento
+                      </span>
+                    ) : null}
+                    {isCompleted ? (
+                      <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                        Salvo
+                      </span>
+                    ) : null}
+                  </div>
                   <p
                     className={`mt-0.5 text-sm ${
                       item.status === "failed" ? "text-red-600" : "text-slate-500"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from services.abc_job_store import (
@@ -47,9 +48,12 @@ def init_job(
         "message": message,
         "queue_position": queue_position,
         "tables_found": 0,
+        "items_found": 0,
         "table_ids": [],
         "result": None,
         "error": None,
+        "created_at": datetime.now().isoformat(),
+        "completed_at": None,
     }
     save_job(upload_id, job)
     track_user_job(user_id, upload_id)
@@ -64,12 +68,27 @@ def update_job(upload_id: str, **fields: Any) -> None:
     save_job(upload_id, job)
 
 
+def _compact_job_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Resumo leve no job; dados completos ficam no cache do orçamento + PDF em disco."""
+    return {
+        "upload_id": result.get("upload_id"),
+        "filename": result.get("filename"),
+        "items_found": int(result.get("items_found") or 0),
+        "tables_found": int(result.get("tables_found") or 0),
+        "has_pdf": True,
+        "has_orcamento_cache": True,
+    }
+
+
 def complete_job(upload_id: str, result: Dict[str, Any]) -> None:
+    items_found = int(result.get("items_found") or 0)
     update_job(
         upload_id,
         status="completed",
-        result=result,
-        message="Análise concluída — pronto para validação",
+        result=_compact_job_result(result),
+        items_found=items_found,
+        completed_at=datetime.now().isoformat(),
+        message=f"Análise concluída — {items_found} item(ns). Clique para abrir.",
         queue_position=0,
     )
 

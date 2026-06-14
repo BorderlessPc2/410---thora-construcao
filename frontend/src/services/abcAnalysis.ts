@@ -18,9 +18,13 @@ export type AbcAnalysisJob = {
   message?: string;
   queue_position?: number;
   tables_found?: number;
+  items_found?: number;
   table_ids?: string[];
   error?: string;
   result?: Record<string, unknown>;
+  created_at?: string;
+  completed_at?: string | null;
+  updated_at?: string;
 };
 
 const parseApiError = (error: unknown, fallback: string): string => {

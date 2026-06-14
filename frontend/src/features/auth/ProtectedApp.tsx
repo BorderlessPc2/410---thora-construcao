@@ -3,6 +3,18 @@ import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthContext";
 import SidebarLayout from "../../components/SidebarLayout";
 import { OrcamentoLinhasProvider } from "../orcamentos/OrcamentoLinhasContext";
+import { useAbcBackgroundPoller } from "../abc/useAbcBackgroundPoller";
+
+function ProtectedAppShell() {
+  useAbcBackgroundPoller();
+  return (
+    <OrcamentoLinhasProvider>
+      <SidebarLayout>
+        <Outlet />
+      </SidebarLayout>
+    </OrcamentoLinhasProvider>
+  );
+}
 
 export const ProtectedApp: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -22,12 +34,6 @@ export const ProtectedApp: React.FC = () => {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
-  return (
-    <OrcamentoLinhasProvider>
-      <SidebarLayout>
-        <Outlet />
-      </SidebarLayout>
-    </OrcamentoLinhasProvider>
-  );
+  return <ProtectedAppShell />;
 };
 

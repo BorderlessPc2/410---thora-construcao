@@ -1,4 +1,5 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useDropzone, type DropzoneOptions } from "react-dropzone";
 import { AlertCircle, FileText, Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
@@ -9,11 +10,22 @@ import {
   detectOrcamentoTables,
   processAnaliticoFullBatch,
   processAnaliticoFullPdf,
-  processOrcamentoConfirmed,
   uploadPDF,
   type AnaliticoBatchJobStatus,
   type AnaliticoFullPdfResult,
 } from "../../services/api";
+import {
+  enqueueAbcProcess,
+  getAbcBatchStatus,
+  registerAbcBatch,
+  updateAbcJob,
+} from "../../services/abcAnalysis";
+import {
+  markAbcJobNotified,
+  trackAbcBackgroundJob,
+  untrackAbcBackgroundJob,
+} from "../../features/abc/abcBackgroundJobs";
+import { appendAbcAnalysisUploadId } from "../../features/abc/abcSession";
 import {
   ProcessingQueuePanel,
   type ProcessingQueueItem,
@@ -148,6 +160,8 @@ export function OrcamentoPdfWizard({
   );
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
   const autoOpenedRef = useRef<string | null>(null);
+  const processingTableIdsRef = useRef<string[]>([]);
+  const processingPreviewsRef = useRef<OrcamentoWizardResult["selectedTablePreviews"]>([]);
 
   const resetFlow = useCallback(() => {
     setFiles([]);
@@ -162,6 +176,8 @@ export function OrcamentoPdfWizard({
     setBatchResults(new Map());
     setSelectedQueueId(null);
     autoOpenedRef.current = null;
+    processingTableIdsRef.current = [];
+    processingPreviewsRef.current = [];
     setPhase("pick_file");
   }, []);
 
@@ -211,7 +227,7 @@ export function OrcamentoPdfWizard({
     setSelectedQueueId(null);
   };
 
-  const finishWithResult = async (
+  const finishWithResult = useCallback(async (
     currentUploadId: string,
     result: {
       hierarchical_items?: unknown[];
@@ -241,7 +257,65 @@ export function OrcamentoPdfWizard({
       resumo: result.resumo,
       iaMetadata: result.ia_metadata,
     });
-  };
+  }, [onComplete]);
+
+  useEffect(() => {
+    if (isFullPdf || phase !== "processing_ai" || !uploadId || !file) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const pollJob = async () => {
+      try {
+        const jobs = (await getAbcBatchStatus([uploadId])) ?? [];
+        if (cancelled) return;
+
+        const job = jobs[0];
+        if (!job) return;
+
+        if (job.status === "queued" || job.status === "processing") {
+          setProcessingDetail(
+            job.message ??
+              (job.queue_position
+                ? `Na fila (posição ${job.queue_position})…`
+                : "IA analisando tabelas…"),
+          );
+          return;
+        }
+
+        if (job.status === "completed" && job.result) {
+          markAbcJobNotified(uploadId);
+          untrackAbcBackgroundJob(uploadId);
+          setProcessingDetail("Análise concluída — abrindo validação…");
+          await finishWithResult(
+            uploadId,
+            job.result as Parameters<typeof finishWithResult>[1],
+            file,
+            processingTableIdsRef.current,
+            processingPreviewsRef.current,
+          );
+          return;
+        }
+
+        if (job.status === "failed") {
+          const msg = job.error || job.message || "Falha no processamento com IA";
+          setErrorMessage(msg);
+          setPhase("selecting_table");
+          toast.error("Falha ao processar", { description: msg });
+        }
+      } catch {
+        /* poller global também acompanha */
+      }
+    };
+
+    void pollJob();
+    const timer = window.setInterval(() => void pollJob(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isFullPdf, phase, uploadId, file, finishWithResult]);
 
   const handleQueueSelect = async (item: ProcessingQueueItem) => {
     const result = batchResults.get(item.uploadId);
@@ -470,6 +544,13 @@ export function OrcamentoPdfWizard({
       const currentUploadId = uploadResponse.upload_id as string;
       setUploadId(currentUploadId);
 
+      await registerAbcBatch([{ uploadId: currentUploadId, filename: file.name }]);
+      appendAbcAnalysisUploadId(currentUploadId);
+      await updateAbcJob(currentUploadId, {
+        status: "detecting",
+        message: "Detectando tabelas no PDF…",
+      });
+
       setPhase("detecting");
       const detectResponse = await detectOrcamentoTables(currentUploadId);
       const mappedOptions: MockTableOption[] = (detectResponse.options || []).map(
@@ -485,6 +566,11 @@ export function OrcamentoPdfWizard({
       setTableOptions(mappedOptions);
       setSelectedTableIds([]);
       if (mappedOptions.length === 0) {
+        await updateAbcJob(currentUploadId, {
+          status: "failed",
+          error: "Nenhuma tabela válida encontrada neste PDF.",
+          tables_found: 0,
+        });
         setPhase("pick_file");
         setErrorMessage(
           "Nenhuma tabela com dados suficientes foi encontrada. Verifique se o PDF contém planilha analítica.",
@@ -494,6 +580,11 @@ export function OrcamentoPdfWizard({
         });
         return;
       }
+      await updateAbcJob(currentUploadId, {
+        status: "awaiting_selection",
+        message: `${mappedOptions.length} tabela(s) encontrada(s) — selecione para analisar`,
+        tables_found: mappedOptions.length,
+      });
       setPhase("selecting_table");
       toast.success("Tabelas encontradas", {
         description: "Selecione a tabela correta para continuar.",
@@ -528,9 +619,7 @@ export function OrcamentoPdfWizard({
     if (!file || !uploadId || selectedTableIds.length === 0) return;
 
     setPhase("processing_ai");
-    toast.success(
-      `${selectedTableIds.length} tabela(s) selecionada(s). Iniciando processamento de IA...`,
-    );
+    setProcessingDetail("Enfileirando análise no servidor…");
 
     try {
       const selectedLabels = selectedTableIds
@@ -538,7 +627,6 @@ export function OrcamentoPdfWizard({
         .join(", ");
       console.info(`[${logTag}] Tabelas enviadas ao backend:`, selectedTableIds, selectedLabels);
 
-      const result = await processOrcamentoConfirmed(uploadId, selectedTableIds);
       const selectedTablePreviews = selectedTableIds
         .map((id) => tableOptions.find((t) => t.id === id))
         .filter((t): t is MockTableOption => Boolean(t))
@@ -549,7 +637,22 @@ export function OrcamentoPdfWizard({
           imagem_base64: t.imagem_base64,
         }));
 
-      await finishWithResult(uploadId, result, file, selectedTableIds, selectedTablePreviews);
+      processingTableIdsRef.current = selectedTableIds;
+      processingPreviewsRef.current = selectedTablePreviews;
+
+      await enqueueAbcProcess(uploadId, selectedTableIds);
+      appendAbcAnalysisUploadId(uploadId);
+      trackAbcBackgroundJob(uploadId);
+
+      toast.success(
+        `${selectedTableIds.length} tabela(s) em análise`,
+        {
+          description:
+            "Acompanhe em Lista de análises. O processamento continua em segundo plano.",
+          duration: 8000,
+        },
+      );
+      setProcessingDetail("IA processando na fila do servidor…");
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar com IA";
       setErrorMessage(msg);
@@ -665,6 +768,15 @@ export function OrcamentoPdfWizard({
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                       {processingLabel}
                     </div>
+                    {!isFullPdf ? (
+                      <p className="mb-2 text-xs text-blue-600">
+                        Esta análise aparece na{" "}
+                        <Link to="/lista-analises" className="font-medium underline">
+                          Lista de análises
+                        </Link>{" "}
+                        — você pode sair desta tela.
+                      </p>
+                    ) : null}
                     {processingDetail ? (
                       <p className="mb-2 text-xs text-slate-500">{processingDetail}</p>
                     ) : null}

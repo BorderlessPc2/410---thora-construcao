@@ -104,6 +104,9 @@ FIREBASE_STORAGE_BUCKET = os.getenv(
     "borderless-5a4c8.firebasestorage.app",
 )
 
+# Detecção de tabelas em PDF (limite de páginas para pdfplumber/Camelot)
+DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", "60"))
+
 # Redis / Celery (fila persistente de Orçamento Analítico)
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", REDIS_URL).strip()

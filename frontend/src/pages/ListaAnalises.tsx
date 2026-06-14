@@ -19,27 +19,25 @@ import {
   updateAbcJob,
   type AbcAnalysisJob,
 } from "../services/abcAnalysis";
+import { trackAbcBackgroundJob } from "../features/abc/abcBackgroundJobs";
+import {
+  appendAbcAnalysisUploadId,
+  loadAbcAnalysisUploadIds,
+  saveAbcAnalysisUploadIds,
+} from "../features/abc/abcSession";
 
-const SESSION_KEY = "abc-analysis-upload-ids";
 const POLL_MS = 2000;
 
 type LocationState = {
   pendingFiles?: File[];
 };
 
-function saveSessionUploadIds(ids: string[]) {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(ids));
-}
-
-function loadSessionUploadIds(): string[] {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
+function sortJobsNewestFirst(jobs: AbcAnalysisJob[]): AbcAnalysisJob[] {
+  return [...jobs].sort((a, b) => {
+    const aTime = a.completed_at || a.updated_at || a.created_at || "";
+    const bTime = b.completed_at || b.updated_at || b.created_at || "";
+    return bTime.localeCompare(aTime);
+  });
 }
 
 function mapTableCandidates(options: OrcamentoTableCandidate[]): MockTableOption[] {
@@ -100,22 +98,35 @@ export default function ListaAnalises() {
     [cacheTableOptions],
   );
 
-  const refreshJobs = useCallback(async (uploadIds?: string[]) => {
-    if (uploadIds && uploadIds.length > 0) {
-      const batch = (await getAbcBatchStatus(uploadIds)) ?? [];
-      setJobs((prev) => {
-        const map = new Map((prev ?? []).map((j) => [j.upload_id, j]));
-        for (const job of batch) {
-          map.set(job.upload_id, { ...map.get(job.upload_id), ...job });
-        }
-        return Array.from(map.values());
-      });
+  const refreshJobs = useCallback(async (extraUploadIds?: string[]) => {
+    const list = (await fetchAbcJobsSafe()) ?? [];
+    const sessionIds = loadAbcAnalysisUploadIds();
+    const allIds = [
+      ...new Set([
+        ...list.map((j) => j.upload_id),
+        ...sessionIds,
+        ...(extraUploadIds ?? []),
+      ]),
+    ].filter((id) => !id.startsWith("pending-"));
+
+    if (allIds.length === 0) {
+      setJobs([]);
       return;
     }
 
-    const list = (await fetchAbcJobsSafe()) ?? [];
-    setJobs(list);
-    saveSessionUploadIds(list.map((j) => j.upload_id));
+    const batch = (await getAbcBatchStatus(allIds)) ?? [];
+    const map = new Map<string, AbcAnalysisJob>();
+    for (const job of list) {
+      map.set(job.upload_id, job);
+    }
+    for (const job of batch) {
+      const prev = map.get(job.upload_id);
+      map.set(job.upload_id, prev ? { ...prev, ...job } : job);
+    }
+
+    const merged = sortJobsNewestFirst(Array.from(map.values()));
+    setJobs(merged);
+    saveAbcAnalysisUploadIds(merged.map((j) => j.upload_id));
   }, []);
 
   const runDetectForUpload = useCallback(
@@ -168,8 +179,10 @@ export default function ListaAnalises() {
       const uploadResults = await Promise.all(
         files.map(async (file) => {
           const response = await uploadPDF(file);
+          const uploadId = response.upload_id as string;
+          appendAbcAnalysisUploadId(uploadId);
           return {
-            uploadId: response.upload_id as string,
+            uploadId,
             filename: file.name,
           };
         }),
@@ -177,7 +190,7 @@ export default function ListaAnalises() {
 
       const registered = (await registerAbcBatch(uploadResults)) ?? [];
       const uploadIds = uploadResults.map((r) => r.uploadId);
-      saveSessionUploadIds(uploadIds);
+      saveAbcAnalysisUploadIds(uploadIds);
       setJobs(
         registered.length > 0
           ? registered
@@ -208,12 +221,7 @@ export default function ListaAnalises() {
           await bootstrapPendingFiles(pendingFiles);
           navigate("/lista-analises", { replace: true, state: null });
         } else {
-          const sessionIds = loadSessionUploadIds();
-          if (sessionIds.length > 0) {
-            await refreshJobs(sessionIds);
-          } else {
-            await refreshJobs();
-          }
+          await refreshJobs();
         }
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : "Erro ao carregar análises";
@@ -231,7 +239,9 @@ export default function ListaAnalises() {
     if (uploadIds.length === 0) return;
 
     const hasActive = jobs.some((j) =>
-      ["uploading", "detecting", "queued", "processing"].includes(j.status),
+      ["uploading", "detecting", "queued", "processing", "awaiting_selection"].includes(
+        j.status,
+      ),
     );
     if (!hasActive) return;
 
@@ -274,8 +284,10 @@ export default function ListaAnalises() {
     setIsConfirming(true);
     try {
       await enqueueAbcProcess(modalUploadId, selectedTableIds);
+      appendAbcAnalysisUploadId(modalUploadId);
+      trackAbcBackgroundJob(modalUploadId);
       toast.success("Análise enfileirada", {
-        description: "A IA processará este edital em sequência.",
+        description: "Visível nesta lista em segundo plano — permanece salva ao concluir.",
       });
       setModalUploadId(null);
       setSelectedTableIds([]);
@@ -313,8 +325,8 @@ export default function ListaAnalises() {
           </Link>
           <h1 className="mt-3 text-2xl font-bold text-slate-900">Lista de análises</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Acompanhe cada edital enviado em lote. Escolha a tabela quando solicitado e abra a
-            validação quando concluir.
+            Todas as análises da Curva ABC aparecem aqui — em andamento, aguardando tabela ou
+            concluídas. Clique em uma análise pronta para revisar itens e o PDF novamente.
           </p>
         </div>
         <Link to="/orcamento" className={`${btnPrimary} inline-flex items-center gap-2`}>

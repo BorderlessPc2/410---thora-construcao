@@ -32,6 +32,11 @@ from .budget_scoring import (
     detect_budget_pages,
     detect_readable_pages_for_rescan,
 )
+from .hybrid_extraction import (
+    detect_table_structure,
+    enrich_hierarchical_items,
+    merge_ai_with_parser,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -298,19 +303,33 @@ def _build_selected_table_prompt(
     table_page: int,
     table_id: str,
     table_name: str | None = None,
+    column_structure: Dict[str, Any] | None = None,
 ) -> str:
-    payload = {
+    payload: Dict[str, Any] = {
         "tarefa": "extrair_orcamento_analitico",
         "table_id": table_id,
         "nome_tabela_sugerido": table_name,
         "num_pagina": table_page,
-        "observacao": "Use apenas o contexto da tabela selecionada. Se o arquivo tiver cabeçalhos/rodapés repetidos, ignore-os.",
+        "observacao": (
+            "Use apenas o contexto da tabela selecionada. Se o arquivo tiver cabeçalhos/rodapés "
+            "repetidos, ignore-os. Os índices em colunas_detectadas indicam a coluna correta de "
+            "cada campo (0 = primeira coluna)."
+        ),
         "linhas": truncate_rows_for_audit(
             table_rows,
             max_rows=_MAX_TABLE_ROWS_FOR_PROMPT,
             max_cell_len=_MAX_CELL_CHARS,
         ),
     }
+    if column_structure:
+        indices = column_structure.get("column_indices") or {}
+        if indices:
+            payload["colunas_detectadas"] = indices
+            payload["linha_cabecalho"] = column_structure.get("header_row_index")
+            payload["instrucao_colunas"] = (
+                "Um parser local já mapeou as colunas — alinhe quantidade, unidade, BDI e preços "
+                "a esses índices. Foque em codigo, descricao, tipo_linha e item_numero."
+            )
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -530,7 +549,7 @@ def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
             tipo_linha = "composicao"
 
     # Grupo/item definitivo é aplicado em analitico_normalize (qtd e VU zerados → grupo)
-    return {
+    row_out = {
         "item": item_number,
         "item_numero": item_number,
         "tipo": tipo_linha,
@@ -548,6 +567,13 @@ def _coerce_row_fields(item: Dict[str, Any]) -> Dict[str, Any]:
         "valor_unitario": valor_unitario,
         "valor_total": total,
     }
+    if item.get("confianca") is not None:
+        row_out["confianca"] = item.get("confianca")
+    if item.get("alertas"):
+        row_out["alertas"] = item.get("alertas")
+    if item.get("origem_extracao"):
+        row_out["origem_extracao"] = item.get("origem_extracao")
+    return row_out
 
 
 def _should_skip_extracted_row(tipo: str, descricao: str, codigo: str) -> bool:
@@ -762,8 +788,15 @@ async def process_selected_table(
     t0 = time.perf_counter()
     client = _get_client()
 
+    table_structure = detect_table_structure(table_rows)
     system_msg = EXTRACTION_SYSTEM_PROMPT
-    user_msg = _build_selected_table_prompt(table_rows, table_page, table_id, table_name)
+    user_msg = _build_selected_table_prompt(
+        table_rows,
+        table_page,
+        table_id,
+        table_name,
+        column_structure=table_structure,
+    )
     
     image_mime = "image/png"
     if table_image_base64:
@@ -784,6 +817,8 @@ async def process_selected_table(
         "rows_truncated": truncate_rows_for_audit(table_rows, max_rows=10),
         "has_image": bool(base64_image),
         "image_source": "crop" if table_image_base64 else "full_page",
+        "column_indices": table_structure.get("column_indices"),
+        "parser_items_found": len(table_structure.get("parser_items") or []),
     }
 
     try:
@@ -835,8 +870,14 @@ async def process_selected_table(
             import traceback; traceback.print_exc()
             raise ValueError(f"Falha ao decodificar o JSON retornado pela OpenAI: {e}")
         raw_items = parsed.get("orcamento_itens") if isinstance(parsed, dict) else []
-        hierarchical_items = _normalize_hierarchical_items(raw_items)
-        normalized_items = _normalize_structured_items(raw_items)
+        merged_raw = merge_ai_with_parser(
+            [item for item in raw_items if isinstance(item, dict)],
+            table_structure,
+        )
+        hierarchical_items = enrich_hierarchical_items(
+            _normalize_hierarchical_items(merged_raw or raw_items)
+        )
+        normalized_items = _normalize_structured_items(merged_raw or raw_items)
         if not normalized_items and hierarchical_items:
             normalized_items = [
                 row for row in hierarchical_items if row.get("tipo_linha") == "item"
@@ -879,7 +920,6 @@ async def process_selected_table(
                     or not _items_missing_prices(retry_items)
                     or len(retry_items) > len(normalized_items)
                 ):
-                    normalized_items = retry_items
                     parsed = retry_parsed
                     raw_content = retry_raw
                     retry_raw_items = (
@@ -887,7 +927,14 @@ async def process_selected_table(
                         if isinstance(retry_parsed, dict)
                         else []
                     )
-                    hierarchical_items = _normalize_hierarchical_items(retry_raw_items)
+                    retry_merged = merge_ai_with_parser(
+                        [item for item in retry_raw_items if isinstance(item, dict)],
+                        table_structure,
+                    )
+                    hierarchical_items = enrich_hierarchical_items(
+                        _normalize_hierarchical_items(retry_merged or retry_raw_items)
+                    )
+                    normalized_items = _normalize_structured_items(retry_merged or retry_raw_items)
                     input_audit["image_source"] = "full_page_retry"
                     duration_ms = (time.perf_counter() - t0) * 1000
             except Exception as retry_exc:

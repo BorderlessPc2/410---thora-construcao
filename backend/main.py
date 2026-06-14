@@ -29,6 +29,7 @@ from config import (
     TEMP_FOLDER,
     BASE_DIR,
     CACHE_FOLDER,
+    DETECT_TABLES_MAX_PAGES,
     ENVIRONMENT,
     GEMINI_API_KEY,
     GEMINI_MODEL,
@@ -611,16 +612,27 @@ def _preview_text_for_table_rows(rows: List[List[Any]], max_chars: int = 280) ->
     return text[: max_chars - 1] + "…"
 
 
-def _extract_tables_from_pdf_path(file_path: Path) -> List[Dict]:
+def _extract_tables_from_pdf_path(
+    file_path: Path,
+    max_pages: int | None = None,
+) -> List[Dict]:
     """Extrai tabelas de um PDF no disco (mesma lógica usada em /api/extract)."""
     if not pdfplumber:
         raise RuntimeError("pdfplumber não está instalado")
 
     tables: List[Dict] = []
     with pdfplumber.open(file_path) as pdf:
-        logger.info(f"📄 Processando PDF: {len(pdf.pages)} página(s)")
+        total_pages = len(pdf.pages)
+        scan_limit = min(total_pages, max_pages) if max_pages else total_pages
+        logger.info(
+            "📄 Processando PDF: %s página(s)%s",
+            total_pages,
+            f" (limite {scan_limit})" if max_pages and scan_limit < total_pages else "",
+        )
 
         for page_num, page in enumerate(pdf.pages):
+            if max_pages is not None and page_num >= max_pages:
+                break
             logger.info(f"  Página {page_num + 1}: {page.width}x{page.height}")
 
             page_tables = page.extract_tables()
@@ -1090,16 +1102,18 @@ def _page_thumbnail_base64(file_path: Path, page_num: int, matrix_scale: float =
         doc.close()
 
 
-def _pdfplumber_detect_options(file_path: Path, min_nonempty_rows: int = 8) -> List[Dict[str, Any]]:
-    """Candidatos de tabela via pdfplumber (mais linhas que Camelot em PDFs de orçamento)."""
+def _pdfplumber_detect_options(
+    file_path: Path,
+    min_nonempty_rows: int = 8,
+    max_pages: int | None = DETECT_TABLES_MAX_PAGES,
+) -> List[Dict[str, Any]]:
+    """Candidatos de tabela via pdfplumber (mais rápido que Camelot em PDFs de orçamento)."""
     try:
-        all_tables = _extract_tables_from_pdf_path(file_path)
+        all_tables = _extract_tables_from_pdf_path(file_path, max_pages=max_pages)
     except Exception as exc:
         logger.warning("pdfplumber detect: %s", exc)
         return []
 
-    thumb_cache: Dict[int, str] = {}
-    options: List[Dict[str, Any]] = []
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for table in all_tables:
         rows = table.get("rows") or []
@@ -1111,12 +1125,6 @@ def _pdfplumber_detect_options(file_path: Path, min_nonempty_rows: int = 8) -> L
         table_id = str(table.get("table_id") or f"page_{page_num}_table_0")
         preview = _preview_text_for_table_rows(rows)
         name = _guess_table_name_from_preview(preview, len(scored) + 1)
-        if page_num not in thumb_cache:
-            try:
-                thumb_cache[page_num] = _page_thumbnail_base64(file_path, page_num)
-            except Exception as exc:
-                logger.warning("thumbnail página %s: %s", page_num, exc)
-                thumb_cache[page_num] = ""
         scored.append(
             (
                 budget_score,
@@ -1126,12 +1134,12 @@ def _pdfplumber_detect_options(file_path: Path, min_nonempty_rows: int = 8) -> L
                     "num_pagina": page_num,
                     "nome_tabela": f"{name} (Pág {page_num}, {nonempty} linhas)",
                     "preview_texto": preview,
-                    "imagem_base64": thumb_cache.get(page_num) or None,
                     "coordenadas": None,
                     "source": "pdfplumber",
                     "row_count": nonempty,
                     "budget_score": budget_score,
                     "is_budget_likely": budget_score >= 18,
+                    "rows": rows,
                 },
             )
         )
@@ -1146,6 +1154,18 @@ def _pdfplumber_detect_options(file_path: Path, min_nonempty_rows: int = 8) -> L
     options.sort(
         key=lambda o: (-int(o.get("budget_score") or 0), -int(o.get("row_count") or 0))
     )
+
+    thumb_cache: Dict[int, str] = {}
+    for option in options:
+        page_num = int(option.get("pagina") or 1)
+        if page_num not in thumb_cache:
+            try:
+                thumb_cache[page_num] = _page_thumbnail_base64(file_path, page_num)
+            except Exception as exc:
+                logger.warning("thumbnail página %s: %s", page_num, exc)
+                thumb_cache[page_num] = ""
+        option["imagem_base64"] = thumb_cache.get(page_num) or None
+
     return options
 
 
@@ -1679,59 +1699,40 @@ class ProcessConfirmedRequest(BaseModel):
     table_id: str | None = None
 
 
-import base64
-import fitz
-import camelot
+def _strip_rows_from_table_options(options: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove matrizes de linhas da resposta HTTP (mantidas no cache do servidor)."""
+    return [{key: value for key, value in option.items() if key != "rows"} for option in options]
 
-@app.post("/api/orcamentos/detect-tables")
-async def detect_orcamento_tables(
-    upload_id: str = Form(...),
-    user_id: str = Depends(get_current_user_id),
-):
-    """
-    Lista candidatos a tabela orçamentária usando Camelot (leitura vetorial) e gera thumbnails com PyMuPDF.
-    """
-    upload_id = _validate_upload_id(upload_id)
-    file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
 
-    meta = _load_upload_meta(upload_id)
-    expected_user = meta.get("userId")
-    _assert_upload_access(user_id, expected_user)
-
+def _camelot_detect_options(file_path: Path, max_pages: int = DETECT_TABLES_MAX_PAGES) -> List[Dict[str, Any]]:
+    """Fallback Camelot em páginas limitadas (mais lento que pdfplumber)."""
+    doc = fitz.open(str(file_path))
     try:
-        # 1. Detectar tabelas com Camelot
-        # Usamos pages='1-10' para não demorar muito em PDFs gigantes, ou 'all' se preferir.
-        # O prompt pediu pages='all', mas pode ser lento. Vamos usar 'all'
-        tables = camelot.read_pdf(str(file_path), pages='all', flavor='lattice')
-        
-        options = []
-        if len(tables) > 0:
-            # 2. Abrir PDF com PyMuPDF para gerar thumbnails
-            doc = fitz.open(str(file_path))
-            
-            for idx, table in enumerate(tables):
-                page_num = int(table.page)
-                # PyMuPDF usa índice 0-based
-                page = doc[page_num - 1]
-                
-                # Coordenadas do Camelot: (x0, y0, x1, y1) onde y é de baixo para cima
-                x0, y0, x1, y1 = table._bbox
-                
-                # Converter para coordenadas do PyMuPDF (y de cima para baixo)
-                rect = fitz.Rect(x0, page.rect.height - y1, x1, page.rect.height - y0)
-                
-                # Renderizar imagem
-                pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
-                img_bytes = pix.tobytes("png")
-                b64 = base64.b64encode(img_bytes).decode("utf-8")
-                
-                camelot_rows = _camelot_table_to_rows(table)
-                nonempty = _count_nonempty_table_rows(camelot_rows)
-                if nonempty < 3:
-                    continue
-                options.append({
+        page_count = doc.page_count
+    finally:
+        doc.close()
+
+    pages_spec = f"1-{min(page_count, max_pages)}"
+    tables = camelot.read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
+    if len(tables) == 0:
+        return []
+
+    options: List[Dict[str, Any]] = []
+    doc = fitz.open(str(file_path))
+    try:
+        for idx, table in enumerate(tables):
+            page_num = int(table.page)
+            page = doc[page_num - 1]
+            x0, y0, x1, y1 = table._bbox
+            rect = fitz.Rect(x0, page.rect.height - y1, x1, page.rect.height - y0)
+            pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
+            b64 = base64.b64encode(pix.tobytes("png")).decode("utf-8")
+            camelot_rows = _camelot_table_to_rows(table)
+            nonempty = _count_nonempty_table_rows(camelot_rows)
+            if nonempty < 3:
+                continue
+            options.append(
+                {
                     "id": f"table-{idx}",
                     "pagina": page_num,
                     "coordenadas": [x0, y0, x1, y1],
@@ -1742,30 +1743,84 @@ async def detect_orcamento_tables(
                     or "Visualização disponível via imagem.",
                     "row_count": nonempty,
                     "rows": camelot_rows,
-                })
-            
-            doc.close()
-            
-    except Exception as exc:
-        logger.error("detect-tables: falha na identificação com Camelot: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
+                    "source": "camelot",
+                }
+            )
+    finally:
+        doc.close()
+    return options
 
-    fallback_used = False
-    if not options:
-        fallback_used = True
+
+def _detect_table_options_sync(file_path: Path) -> Tuple[List[Dict[str, Any]], bool]:
+    """
+    Detecta candidatos a tabela: pdfplumber primeiro (rápido), Camelot como fallback.
+    Retorna (opções, usou_fallback_camelot).
+    """
+    options = _pdfplumber_detect_options(file_path)
+    if options:
+        logger.info("detect-tables: %s candidato(s) via pdfplumber", len(options))
+        return options, False
+
+    logger.info("detect-tables: pdfplumber vazio — tentando Camelot (máx. %s págs)", DETECT_TABLES_MAX_PAGES)
+    try:
+        options = _camelot_detect_options(file_path)
+    except Exception as exc:
+        logger.warning("detect-tables: Camelot falhou: %s", exc)
+        options = []
+
+    return options, True
+
+
+@app.post("/api/orcamentos/detect-tables")
+async def detect_orcamento_tables(
+    upload_id: str = Form(...),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Lista candidatos a tabela orçamentária (pdfplumber + fallback Camelot em páginas limitadas).
+    """
+    upload_id = _validate_upload_id(upload_id)
+    file_path = UPLOAD_FOLDER / f"{upload_id}.pdf"
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Upload não encontrado: {upload_id}")
+
+    meta = _load_upload_meta(upload_id)
+    expected_user = meta.get("userId")
+    _assert_upload_access(user_id, expected_user)
+
+    upload_data = _get_upload_data_from_sources(upload_id) or {}
+    cached_options = upload_data.get("table_candidates") or []
+    if cached_options:
+        return {
+            "status": "success",
+            "upload_id": upload_id,
+            "tables_found": len(cached_options),
+            "options": _strip_rows_from_table_options(cached_options),
+            "mock_fallback": False,
+            "cached": True,
+        }
+
+    try:
+        options, fallback_used = await asyncio.to_thread(_detect_table_options_sync, file_path)
+    except Exception as exc:
+        logger.error("detect-tables: falha na identificação: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
 
     _OFFLINE_CACHE.setdefault(upload_id, {})
     _OFFLINE_CACHE[upload_id]["table_candidates"] = options
     _OFFLINE_CACHE[upload_id]["uploadId"] = upload_id
     _OFFLINE_CACHE[upload_id]["userId"] = user_id
+    if meta.get("filename"):
+        _OFFLINE_CACHE[upload_id]["filename"] = meta.get("filename")
     _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
 
     return {
         "status": "success",
         "upload_id": upload_id,
         "tables_found": len(options),
-        "options": options,
+        "options": _strip_rows_from_table_options(options),
         "mock_fallback": fallback_used,
+        "cached": False,
     }
 
 
@@ -1785,7 +1840,7 @@ async def get_orcamento_table_candidates(
         "status": "success",
         "upload_id": upload_id,
         "tables_found": len(options),
-        "options": options,
+        "options": _strip_rows_from_table_options(options),
         "cached": True,
     }
 
@@ -1814,10 +1869,17 @@ def _normalize_analytic_items(raw_items: List[Any]) -> List[Dict[str, Any]]:
             vu = vt / q
         if vt <= 0 and q > 0 and vu > 0:
             vt = q * vu
+        confianca = it.get("confianca")
+        alertas = it.get("alertas")
+        origem_extracao = it.get("origem_extracao") or "openai_orcamento_analitico"
+        status = "revisar" if (
+            (isinstance(confianca, (int, float)) and float(confianca) < 0.75)
+            or (isinstance(alertas, list) and len(alertas) > 0)
+        ) else "validado"
         normalized.append(
             {
                 "id": f"item_ai_{idx}",
-                "item": str(it.get("item") or ""),
+                "item": str(it.get("item") or it.get("item_numero") or ""),
                 "tipo": str(it.get("tipo") or "item"),
                 "banco": str(it.get("banco") or ""),
                 "codigo": str(it.get("codigo") or it.get("Código") or it.get("code") or ""),
@@ -1827,8 +1889,10 @@ def _normalize_analytic_items(raw_items: List[Any]) -> List[Dict[str, Any]]:
                 "unidade": str(it.get("unidade", "un") or "un"),
                 "valor_unitario": vu,
                 "valor_total": vt if vt > 0 else q * vu,
-                "status": "validado",
-                "origem": "openai_orcamento_analitico",
+                "status": status,
+                "origem": origem_extracao,
+                "confianca": confianca,
+                "alertas": alertas if isinstance(alertas, list) else [],
             }
         )
     return normalized
@@ -1872,20 +1936,36 @@ async def _execute_process_confirmed(
 
     filename = str(meta.get("filename") or file_path.name)
 
+    upload_data = _get_upload_data_from_sources(upload_id) or {}
+    table_candidates = upload_data.get("table_candidates") or []
+
+    all_tables: List[Dict] = []
     try:
-        all_tables = _extract_tables_from_pdf_path(file_path)
+        all_tables = _extract_tables_from_pdf_path(file_path, max_pages=DETECT_TABLES_MAX_PAGES)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Erro ao ler PDF: {exc}") from exc
 
     camelot_tables = None
-    try:
-        camelot_tables = camelot.read_pdf(str(file_path), pages="all", flavor="lattice")
-        logger.info("Camelot: %s tabela(s) carregadas para process-confirmed", len(camelot_tables))
-    except Exception as exc:
-        logger.warning("Camelot indisponível em process-confirmed: %s", exc)
-
-    upload_data = _get_upload_data_from_sources(upload_id) or {}
-    table_candidates = upload_data.get("table_candidates") or []
+    needs_camelot = any(
+        not (next((c for c in table_candidates if c.get("id") == t_id), {}) or {}).get("rows")
+        for t_id in ids_to_process
+    )
+    if needs_camelot:
+        try:
+            doc = fitz.open(str(file_path))
+            try:
+                page_count = doc.page_count
+            finally:
+                doc.close()
+            pages_spec = f"1-{min(page_count, DETECT_TABLES_MAX_PAGES)}"
+            camelot_tables = camelot.read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
+            logger.info(
+                "Camelot: %s tabela(s) carregadas para process-confirmed (%s)",
+                len(camelot_tables),
+                pages_spec,
+            )
+        except Exception as exc:
+            logger.warning("Camelot indisponível em process-confirmed: %s", exc)
 
     candidate_ids = {str(c.get("id")) for c in table_candidates if c.get("id")}
     unknown_ids = [t_id for t_id in ids_to_process if t_id and t_id not in candidate_ids]
@@ -1921,12 +2001,28 @@ async def _execute_process_confirmed(
                 detail=f"Tabela {t_id} não encontrada entre as opções detectadas.",
             )
 
-        rows, page, resolved_table_id = _resolve_rows_for_candidate(
-            t_id,
-            selected_candidate,
-            all_tables,
-            camelot_tables,
-        )
+        cached_rows = selected_candidate.get("rows")
+        if cached_rows and _count_nonempty_table_rows(cached_rows) >= 3:
+            rows = cached_rows
+            page = int(
+                selected_candidate.get("pagina")
+                or selected_candidate.get("num_pagina")
+                or 1
+            )
+            resolved_table_id = str(selected_candidate.get("id") or t_id)
+            logger.info(
+                "Tabela %s resolvida via cache de detecção (pág %s, %s linhas)",
+                t_id,
+                page,
+                len(rows),
+            )
+        else:
+            rows, page, resolved_table_id = _resolve_rows_for_candidate(
+                t_id,
+                selected_candidate,
+                all_tables,
+                camelot_tables,
+            )
         if not rows:
             logger.warning("Tabela não encontrada para o ID: %s", t_id)
             raise HTTPException(
@@ -2118,21 +2214,24 @@ async def _execute_process_confirmed(
         doc_id = upload_id
 
     _OFFLINE_CACHE.setdefault(upload_id, {})
-    _OFFLINE_CACHE[upload_id]["itemsData"] = {
-        "items": normalized_items,
-        "hierarchical_items": structured_items,
-        "resumo": combined_resumo,
-    }
-    _OFFLINE_CACHE[upload_id]["ia_metadata"] = ia_metadata_final
+    _OFFLINE_CACHE[upload_id].update(
+        {
+            "uploadId": upload_id,
+            "userId": user_id,
+            "filename": filename,
+            "items": normalized_items,
+            "tables": tables_out,
+            "resumo": combined_resumo,
+            "status": "completed",
+            "itemsData": {
+                "items": normalized_items,
+                "hierarchical_items": structured_items,
+                "resumo": combined_resumo,
+            },
+            "ia_metadata": ia_metadata_final,
+        }
+    )
     _save_extracted_cache(upload_id, _OFFLINE_CACHE[upload_id])
-
-    try:
-        file_path.unlink()
-        meta_path = _meta_path_for_upload_id(upload_id)
-        if meta_path.exists():
-            meta_path.unlink()
-    except Exception as e:
-        logger.warning("⚠️  Erro ao remover PDF após processamento: %s", e)
 
     log_ai_exchange(
         operation="process_confirmed",
@@ -3666,7 +3765,12 @@ async def get_orcamento_pdf(
                 detail="PDF não encontrado no servidor. Reenvie o arquivo se necessário.",
             ) from None
 
-    filename = str(meta.get("filename") or f"{upload_id}.pdf")
+    upload_data = _get_upload_data_from_sources(upload_id) or {}
+    filename = str(
+        meta.get("filename")
+        or upload_data.get("filename")
+        or f"{upload_id}.pdf"
+    )
     return FileResponse(
         path=str(file_path),
         media_type="application/pdf",
@@ -3708,28 +3812,53 @@ async def get_orcamento(
     user_id: str = Depends(get_current_user_id),
 ):
     """
-    Recuperar orçamento específico do Firestore
-    
-    Args:
-        upload_id: Upload ID
-    
-    Returns:
-        {
-            "status": "success",
-            "orcamento": {...}
-        }
+    Recuperar orçamento (cache offline, disco ou Firestore).
     """
     try:
-        orcamento = OrcamentoFirestore.get_orcamento_by_upload_id(
-            upload_id, user_id
-        )
-        
-        if not orcamento:
+        upload_id = _validate_upload_id(upload_id)
+        upload_data = _get_upload_data_from_sources(upload_id)
+        meta = _load_upload_meta(upload_id)
+        owner = meta.get("userId") or (upload_data or {}).get("userId")
+        _assert_upload_access(user_id, owner)
+
+        if not upload_data:
             raise HTTPException(
                 status_code=404,
                 detail=f"❌ Orçamento não encontrado: {upload_id}",
             )
-        
+
+        items_data = upload_data.get("itemsData") or {}
+        if not isinstance(items_data, dict):
+            items_data = {}
+
+        items = upload_data.get("items") or items_data.get("items") or []
+        hierarchical = (
+            items_data.get("hierarchical_items")
+            or upload_data.get("hierarchical_items")
+            or []
+        )
+        resumo = items_data.get("resumo") or upload_data.get("resumo") or {}
+
+        orcamento = {
+            "uploadId": upload_id,
+            "userId": upload_data.get("userId") or owner,
+            "filename": upload_data.get("filename") or meta.get("filename"),
+            "items": items,
+            "itemsData": {
+                "items": items,
+                "hierarchical_items": hierarchical,
+                "resumo": resumo,
+            },
+            "hierarchical_items": hierarchical,
+            "tables": upload_data.get("tables") or [],
+            "ia_metadata": upload_data.get("ia_metadata") or upload_data.get("iaMetadata"),
+            "iaMetadata": upload_data.get("ia_metadata") or upload_data.get("iaMetadata"),
+            "status": upload_data.get("status", "completed"),
+            "resumo": resumo,
+            "extractedAt": upload_data.get("extractedAt"),
+            "uploadedAt": upload_data.get("uploadedAt"),
+        }
+
         return {
             "status": "success",
             "orcamento": orcamento,

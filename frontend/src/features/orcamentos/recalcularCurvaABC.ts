@@ -27,6 +27,10 @@ export interface OrcamentoItem {
   classification?: "A" | "B" | "C";
   individual_percentage?: number;
   accumulated_percentage?: number;
+  /** Confiança da extração híbrida (0–1). */
+  extractionConfidence?: number;
+  /** Alertas de validação automática (ex.: Qtd×VU≠Total). */
+  extractionAlerts?: string[];
 }
 
 export function resolveTipoLinha(item: { tipo?: string; tipo_linha?: string }): "grupo" | "item" | "composicao" {
