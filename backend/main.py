@@ -13,7 +13,6 @@ import json
 import re
 import base64
 import fitz
-import camelot
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
@@ -108,6 +107,19 @@ except ImportError:
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_camelot_module = None
+
+
+def _get_camelot():
+    """Import tardio — Camelot/OpenCV deixam o boot lento e pesado no Render free tier."""
+    global _camelot_module
+    if _camelot_module is None:
+        import camelot as camelot_module
+
+        _camelot_module = camelot_module
+    return _camelot_module
+
 
 _GEMINI_CANDIDATE_MODELS = [
     GEMINI_MODEL,
@@ -1725,7 +1737,7 @@ def _camelot_detect_options(file_path: Path, max_pages: int = DETECT_TABLES_MAX_
         doc.close()
 
     pages_spec = f"1-{min(page_count, max_pages)}"
-    tables = camelot.read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
+    tables = _get_camelot().read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
     if len(tables) == 0:
         return []
 
@@ -1970,7 +1982,7 @@ async def _execute_process_confirmed(
             finally:
                 doc.close()
             pages_spec = f"1-{min(page_count, DETECT_TABLES_MAX_PAGES)}"
-            camelot_tables = camelot.read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
+            camelot_tables = _get_camelot().read_pdf(str(file_path), pages=pages_spec, flavor="lattice")
             logger.info(
                 "Camelot: %s tabela(s) carregadas para process-confirmed (%s)",
                 len(camelot_tables),

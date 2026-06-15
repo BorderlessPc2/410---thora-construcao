@@ -26,6 +26,13 @@ const getAPIBase = () => {
     window.location.hostname === "thora-construcao.vercel.app";
   const isRenderHost = window.location.hostname.endsWith(".onrender.com");
 
+  const isNetlifyHost = window.location.hostname.endsWith(".netlify.app");
+
+  // Netlify: mesma origem + proxy em netlify.toml (evita CORS durante cold start do Render).
+  if (!import.meta.env.DEV && isNetlifyHost) {
+    return window.location.origin;
+  }
+
   // Em deploy fullstack, API e frontend ficam no mesmo domínio.
   if (!import.meta.env.DEV && (isVercelHost || isRenderHost)) {
     return window.location.origin;
@@ -71,21 +78,33 @@ const isRenderColdStartError = (error: unknown): boolean => {
 };
 
 /** Acorda o backend no Render (free tier dorme após inatividade). */
-export const pingApiHealth = async (maxAttempts = 4): Promise<boolean> => {
+export const pingApiHealth = async (maxAttempts = 12): Promise<boolean> => {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await apiClient.get("/health", { timeout: 45000 });
+      const response = await apiClient.get("/health", { timeout: 60000 });
       if (response.data?.status === "online") {
         return true;
       }
     } catch {
-      /* Render ainda subindo */
+      /* Render ainda subindo — 502 sem CORS é normal durante cold start */
     }
     if (attempt < maxAttempts) {
-      await sleep(attempt * 2500);
+      await sleep(Math.min(3000 + attempt * 2500, 12000));
     }
   }
   return false;
+};
+
+/** Bloqueia até a API responder ou falha com mensagem clara. */
+export const ensureApiReady = async (): Promise<void> => {
+  const isReady = await pingApiHealth();
+  if (isReady) return;
+
+  throw new Error(
+    "Servidor da API ainda está iniciando (Render free tier dorme após ~15 min). " +
+      "Aguarde cerca de 1 minuto, abra https://four10-thora-construcao.onrender.com/health no navegador " +
+      "até ver status online e tente novamente.",
+  );
 };
 
 const parseApiError = (error: unknown, fallback: string): string => {
@@ -150,10 +169,10 @@ export const uploadPDF = async (file: File) => {
   const formData = new FormData();
   formData.append("file", file);
 
-  await pingApiHealth();
+  await ensureApiReady();
 
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const response = await apiClient.post("/api/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -166,9 +185,9 @@ export const uploadPDF = async (file: File) => {
       if (err?.code === "ECONNABORTED") {
         throw new Error("Timeout no upload. Verifique conexão/servidor e tente novamente.");
       }
-      if (isRenderColdStartError(error) && attempt < 3) {
-        await sleep(attempt * 4000);
-        await pingApiHealth(2);
+      if (isRenderColdStartError(error) && attempt < 5) {
+        await sleep(attempt * 5000);
+        await ensureApiReady();
         continue;
       }
       break;
@@ -236,10 +255,10 @@ export const detectOrcamentoTables = async (uploadId: string) => {
   const formData = new FormData();
   formData.append("upload_id", uploadId);
 
-  await pingApiHealth();
+  await ensureApiReady();
 
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -248,9 +267,9 @@ export const detectOrcamentoTables = async (uploadId: string) => {
       return response.data as OrcamentoTableDetectResponse;
     } catch (error: unknown) {
       lastError = error;
-      if (isRenderColdStartError(error) && attempt < 2) {
-        await sleep(5000);
-        await pingApiHealth(2);
+      if (isRenderColdStartError(error) && attempt < 3) {
+        await sleep(attempt * 5000);
+        await ensureApiReady();
         continue;
       }
       break;

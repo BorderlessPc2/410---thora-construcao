@@ -2,13 +2,26 @@
   command = "npm install && npm run build"
   publish = "dist"
 
+# Proxy para o backend Render — mesma origem, sem erro de CORS no cold start
+[[redirects]]
+  from = "/api/*"
+  to = "https://four10-thora-construcao.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/health"
+  to = "https://four10-thora-construcao.onrender.com/health"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
 [context.production]
-  environment = { VITE_API_URL = "https://four10-thora-construcao.onrender.com" }
+  environment = { }
 
 [context.deploy-preview]
-  environment = { VITE_API_URL = "https://four10-thora-construcao.onrender.com" }
+  environment = { }
