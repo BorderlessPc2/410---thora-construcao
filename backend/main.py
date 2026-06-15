@@ -1311,11 +1311,12 @@ async def _startup_analitico_queue() -> None:
 # ============== HEALTH CHECK ==============
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint (Render usa para manter/acordar o serviço)."""
     return {
         "status": "online",
         "timestamp": datetime.now().isoformat(),
         "version": API_VERSION,
+        "environment": ENVIRONMENT,
     }
 
 # ============== TEST ==============

@@ -54,6 +54,56 @@ const API_BASE = getAPIBase();
 
 console.info(`🌐 API Base: ${API_BASE}`);
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isRenderColdStartError = (error: unknown): boolean => {
+  const err = error as {
+    response?: { status?: number };
+    code?: string;
+    message?: string;
+  };
+  const status = err.response?.status;
+  if (status === 502 || status === 503 || status === 504) return true;
+  if (!err.response && (err.code === "ERR_NETWORK" || err.message?.includes("Network Error"))) {
+    return true;
+  }
+  return false;
+};
+
+/** Acorda o backend no Render (free tier dorme após inatividade). */
+export const pingApiHealth = async (maxAttempts = 4): Promise<boolean> => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await apiClient.get("/health", { timeout: 45000 });
+      if (response.data?.status === "online") {
+        return true;
+      }
+    } catch {
+      /* Render ainda subindo */
+    }
+    if (attempt < maxAttempts) {
+      await sleep(attempt * 2500);
+    }
+  }
+  return false;
+};
+
+const parseApiError = (error: unknown, fallback: string): string => {
+  const err = error as { response?: { data?: { detail?: unknown }; status?: number } };
+  const detail = err.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((d: { msg?: string }) => d?.msg).join("; ") || fallback;
+  }
+  if (isRenderColdStartError(error)) {
+    return (
+      "Servidor da API indisponível (503). No Render free tier ele dorme após inatividade — " +
+      "aguarde ~30s e tente novamente. Se persistir, abra a URL da API /health no navegador."
+    );
+  }
+  return fallback;
+};
+
 const ANONYMOUS_USER_STORAGE_KEY = "thora_anonymous_user_id";
 
 const getAnonymousUserId = () => {
@@ -100,18 +150,32 @@ export const uploadPDF = async (file: File) => {
   const formData = new FormData();
   formData.append("file", file);
 
-  try {
-    const response = await apiClient.post("/api/upload", formData, {
-      headers: { "Content-Type": "multipart/form-data" },
-      timeout: 120000,
-    });
-    return response.data;
-  } catch (error: any) {
-    if (error?.code === "ECONNABORTED") {
-      throw new Error("Timeout no upload. Verifique conexão/servidor e tente novamente.");
+  await pingApiHealth();
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await apiClient.post("/api/upload", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 120000,
+      });
+      return response.data;
+    } catch (error: unknown) {
+      lastError = error;
+      const err = error as { code?: string };
+      if (err?.code === "ECONNABORTED") {
+        throw new Error("Timeout no upload. Verifique conexão/servidor e tente novamente.");
+      }
+      if (isRenderColdStartError(error) && attempt < 3) {
+        await sleep(attempt * 4000);
+        await pingApiHealth(2);
+        continue;
+      }
+      break;
     }
-    throw new Error(error.response?.data?.detail || "Erro ao enviar arquivo");
   }
+
+  throw new Error(parseApiError(lastError, "Erro ao enviar arquivo"));
 };
 
 // Extrair tabelas e salvar no Firestore
@@ -222,18 +286,6 @@ export type AnaliticoBatchProcessResult = {
   status: "batch_accepted";
   jobs: AnaliticoBatchJobStatus[];
   message: string;
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const parseApiError = (error: unknown, fallback: string): string => {
-  const err = error as { response?: { data?: { detail?: unknown } } };
-  const detail = err.response?.data?.detail;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) {
-    return detail.map((d: { msg?: string }) => d?.msg).join("; ") || fallback;
-  }
-  return fallback;
 };
 
 /** Erros HTTP do axios; demais Error (ex.: falha do job) preservam a mensagem original. */
