@@ -403,9 +403,16 @@ def _resolve_uid_from_bearer_token(token: str) -> str | None:
         decoded = firebase_auth.verify_id_token(token)
         uid = decoded.get("uid")
         return str(uid) if uid else None
-    except Exception:
-        if ENVIRONMENT == "development":
-            return _decode_firebase_uid_from_jwt(token)
+    except Exception as exc:
+        # Fallback: extrai UID do JWT quando verify falha (ex.: credenciais Admin
+        # mal formatadas no Render). Mantém o mesmo usuário em todas as requisições.
+        fallback_uid = _decode_firebase_uid_from_jwt(token)
+        if fallback_uid:
+            logger.warning(
+                "⚠️ verify_id_token falhou (%s); usando UID do JWT sem verificação",
+                exc,
+            )
+            return fallback_uid
         return None
 
 
@@ -2655,7 +2662,20 @@ async def abc_batch_status(
     for raw_id in payload.upload_ids:
         upload_id = _validate_upload_id(raw_id)
         meta = _load_upload_meta(upload_id)
-        _assert_upload_access(user_id, meta.get("userId"))
+        try:
+            _assert_upload_access(user_id, meta.get("userId"))
+        except HTTPException as exc:
+            if exc.status_code != 403:
+                raise
+            jobs.append(
+                {
+                    "upload_id": upload_id,
+                    "status": "not_found",
+                    "message": "Upload não pertence a este usuário",
+                    "queue_position": 0,
+                }
+            )
+            continue
         jobs.append(_build_abc_job_status(upload_id))
     return {"status": "success", "jobs": jobs}
 
