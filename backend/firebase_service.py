@@ -6,9 +6,11 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 import json
+import copy
+import uuid
 from pathlib import Path
 import os
 
@@ -259,3 +261,170 @@ class OrcamentoFirestore:
         except Exception as e:
             logger.error(f"❌ Erro ao deletar orçamento: {str(e)}")
             return False
+
+
+class OrcamentoEnterpriseFirestore:
+    """Auditoria, versionamento e locks de concorrência por projeto (upload_id)."""
+
+    AUDIT_COLLECTION = "audit_logs"
+    VERSIONS_SUBCOLLECTION = "budget_versions"
+    LOCKS_SUBCOLLECTION = "active_locks"
+
+    @staticmethod
+    def _project_ref(project_id: str):
+        if not db:
+            return None
+        return db.collection("projects").document(project_id)
+
+    @staticmethod
+    def save_audit_log(
+        project_id: str,
+        user_id: str,
+        user_name: str,
+        item_codigo: str,
+        campo_alterado: str,
+        valor_antigo: str | float | int | None,
+        valor_novo: str | float | int | None,
+    ) -> Optional[str]:
+        if not db:
+            logger.warning("Firestore offline — audit log não persistido")
+            return None
+
+        try:
+            doc_data = {
+                "project_id": project_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "timestamp": datetime.now(),
+                "item_codigo": item_codigo,
+                "campo_alterado": campo_alterado,
+                "valor_antigo": valor_antigo,
+                "valor_novo": valor_novo,
+            }
+            _, doc_ref = db.collection(OrcamentoEnterpriseFirestore.AUDIT_COLLECTION).add(doc_data)
+            return doc_ref.id
+        except Exception as e:
+            logger.error("Erro ao salvar audit log: %s", e)
+            raise
+
+    @staticmethod
+    def save_budget_version(
+        project_id: str,
+        version_name: str,
+        items_snapshot: List[Dict[str, Any]],
+        created_by: str,
+        created_by_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not db:
+            return None
+
+        try:
+            version_id = str(uuid.uuid4())
+            doc_data = {
+                "id": version_id,
+                "project_id": project_id,
+                "version_name": version_name,
+                "items_snapshot": copy.deepcopy(items_snapshot),
+                "created_at": datetime.now(),
+                "created_by": created_by,
+                "created_by_name": created_by_name,
+            }
+            ref = (
+                OrcamentoEnterpriseFirestore._project_ref(project_id)
+                .collection(OrcamentoEnterpriseFirestore.VERSIONS_SUBCOLLECTION)
+                .document(version_id)
+            )
+            ref.set(doc_data)
+            return doc_data
+        except Exception as e:
+            logger.error("Erro ao salvar versão do orçamento: %s", e)
+            raise
+
+    @staticmethod
+    def list_budget_versions(project_id: str) -> List[Dict[str, Any]]:
+        if not db:
+            return []
+
+        try:
+            docs = (
+                OrcamentoEnterpriseFirestore._project_ref(project_id)
+                .collection(OrcamentoEnterpriseFirestore.VERSIONS_SUBCOLLECTION)
+                .order_by("created_at", direction=firestore.Query.DESCENDING)
+                .stream()
+            )
+            versions = []
+            for doc in docs:
+                data = doc.to_dict() or {}
+                versions.append({"id": doc.id, **data})
+            return versions
+        except Exception as e:
+            logger.error("Erro ao listar versões: %s", e)
+            return []
+
+    @staticmethod
+    def acquire_lock(
+        project_id: str,
+        item_id: str,
+        user_id: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        if not db:
+            return {"status": "ok", "offline": True}
+
+        try:
+            ref = (
+                OrcamentoEnterpriseFirestore._project_ref(project_id)
+                .collection(OrcamentoEnterpriseFirestore.LOCKS_SUBCOLLECTION)
+                .document(item_id)
+            )
+            doc = ref.get()
+            now = datetime.now()
+
+            if doc.exists:
+                existing = doc.to_dict() or {}
+                owner = str(existing.get("user_id", ""))
+                if owner and owner != str(user_id):
+                    return {
+                        "status": "locked",
+                        "locked_by": owner,
+                        "locked_by_name": existing.get("user_name", "Outro usuário"),
+                    }
+
+            ref.set(
+                {
+                    "item_id": item_id,
+                    "user_id": user_id,
+                    "user_name": user_name,
+                    "locked_at": now,
+                }
+            )
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error("Erro ao adquirir lock: %s", e)
+            raise
+
+    @staticmethod
+    def release_lock(project_id: str, item_id: str, user_id: str) -> bool:
+        if not db:
+            return True
+
+        try:
+            ref = (
+                OrcamentoEnterpriseFirestore._project_ref(project_id)
+                .collection(OrcamentoEnterpriseFirestore.LOCKS_SUBCOLLECTION)
+                .document(item_id)
+            )
+            doc = ref.get()
+            if not doc.exists:
+                return True
+
+            existing = doc.to_dict() or {}
+            owner = str(existing.get("user_id", ""))
+            if owner and owner != str(user_id):
+                return False
+
+            ref.delete()
+            return True
+        except Exception as e:
+            logger.error("Erro ao liberar lock: %s", e)
+            raise

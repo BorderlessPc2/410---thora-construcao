@@ -49,7 +49,7 @@ from config import (
     AI_PROVIDER_TIMEOUT_SECONDS,
     ENABLE_MULTI_PROVIDER_CHAIN,
 )
-from firebase_service import OrcamentoFirestore
+from firebase_service import OrcamentoFirestore, OrcamentoEnterpriseFirestore
 from budget_parser import BudgetParser
 from firebase_admin import auth as firebase_auth
 from services.openai_service import (
@@ -442,6 +442,35 @@ async def get_current_user_id(request: Request) -> str:
         return "dev-user-" + str(uuid.uuid4())[:8]
 
     raise HTTPException(status_code=401, detail="Não autenticado")
+
+
+def _resolve_user_name_from_request(request: Request, fallback: str | None = None) -> str:
+    """Extrai nome do usuário a partir do token Firebase ou fallback."""
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        try:
+            decoded = firebase_auth.verify_id_token(token)
+            return (
+                decoded.get("name")
+                or decoded.get("email")
+                or decoded.get("uid")
+                or fallback
+                or "Usuário"
+            )
+        except Exception:
+            if ENVIRONMENT == "development":
+                payload = _decode_firebase_uid_from_jwt(token)
+                if payload:
+                    return payload
+    return fallback or "Usuário"
+
+
+def _assert_project_access(project_id: str, user_id: str) -> None:
+    """Valida upload_id e permissão de acesso ao projeto."""
+    project_id = _validate_upload_id(project_id)
+    meta = _load_upload_meta(project_id)
+    _assert_upload_access(user_id, meta.get("userId"))
 
 
 def _meta_path_for_upload_id(upload_id: str) -> Path:
@@ -4212,6 +4241,154 @@ class ExportXlsxRequest(BaseModel):
         }
     )
     nome_projeto: str | None = None
+
+
+# ============== AUDITORIA, VERSIONAMENTO E LOCKS ==============
+
+class AuditLogRequest(BaseModel):
+    item_codigo: str
+    campo_alterado: str
+    valor_antigo: str | float | int | None = None
+    valor_novo: str | float | int | None = None
+    user_name: str | None = None
+
+
+class SaveBudgetVersionRequest(BaseModel):
+    version_name: str = Field(..., min_length=1, max_length=200)
+    items_snapshot: List[Dict[str, Any]] = Field(default_factory=list)
+    created_by_name: str | None = None
+
+
+class LockActionRequest(BaseModel):
+    user_name: str | None = None
+
+
+@app.post("/api/orcamentos/{project_id}/audit")
+async def create_audit_log(
+    project_id: str,
+    payload: AuditLogRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Registra alteração granular em célula do orçamento analítico."""
+    _assert_project_access(project_id, user_id)
+    user_name = payload.user_name or _resolve_user_name_from_request(request)
+
+    log_id = OrcamentoEnterpriseFirestore.save_audit_log(
+        project_id=project_id,
+        user_id=user_id,
+        user_name=user_name,
+        item_codigo=payload.item_codigo,
+        campo_alterado=payload.campo_alterado,
+        valor_antigo=payload.valor_antigo,
+        valor_novo=payload.valor_novo,
+    )
+    return {"status": "success", "id": log_id}
+
+
+@app.post("/api/orcamentos/{project_id}/versions")
+async def save_budget_version(
+    project_id: str,
+    payload: SaveBudgetVersionRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Salva snapshot profundo do orçamento analítico como nova revisão."""
+    _assert_project_access(project_id, user_id)
+
+    if not payload.items_snapshot:
+        raise HTTPException(status_code=400, detail="items_snapshot não pode estar vazio")
+
+    created_by_name = payload.created_by_name or _resolve_user_name_from_request(request)
+    version = OrcamentoEnterpriseFirestore.save_budget_version(
+        project_id=project_id,
+        version_name=payload.version_name.strip(),
+        items_snapshot=payload.items_snapshot,
+        created_by=user_id,
+        created_by_name=created_by_name,
+    )
+
+    if not version:
+        raise HTTPException(status_code=503, detail="Firestore indisponível")
+
+    return {"status": "success", "version": _serialize_firestore_doc(version)}
+
+
+@app.get("/api/orcamentos/{project_id}/versions")
+async def list_budget_versions(
+    project_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Lista revisões salvas do orçamento analítico."""
+    _assert_project_access(project_id, user_id)
+    versions = OrcamentoEnterpriseFirestore.list_budget_versions(project_id)
+    return {
+        "status": "success",
+        "versions": [_serialize_firestore_doc(v) for v in versions],
+    }
+
+
+@app.post("/api/orcamentos/{project_id}/lock/{item_id}")
+async def acquire_item_lock(
+    project_id: str,
+    item_id: str,
+    payload: LockActionRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Adquire lock de linha para edição concorrente."""
+    _assert_project_access(project_id, user_id)
+    user_name = payload.user_name or _resolve_user_name_from_request(request)
+
+    result = OrcamentoEnterpriseFirestore.acquire_lock(
+        project_id=project_id,
+        item_id=item_id,
+        user_id=user_id,
+        user_name=user_name,
+    )
+
+    if result.get("status") == "locked":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Linha bloqueada por outro usuário",
+                "locked_by": result.get("locked_by"),
+                "locked_by_name": result.get("locked_by_name"),
+            },
+        )
+
+    return {"status": "success", **result}
+
+
+@app.post("/api/orcamentos/{project_id}/unlock/{item_id}")
+async def release_item_lock(
+    project_id: str,
+    item_id: str,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Libera lock de linha após edição."""
+    _assert_project_access(project_id, user_id)
+    released = OrcamentoEnterpriseFirestore.release_lock(
+        project_id=project_id,
+        item_id=item_id,
+        user_id=user_id,
+    )
+
+    if not released:
+        raise HTTPException(status_code=403, detail="Lock pertence a outro usuário")
+
+    return {"status": "success"}
+
+
+def _serialize_firestore_doc(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Converte datetimes do Firestore para ISO strings."""
+    serialized: Dict[str, Any] = {}
+    for key, value in data.items():
+        if isinstance(value, datetime):
+            serialized[key] = value.isoformat()
+        else:
+            serialized[key] = value
+    return serialized
 
 
 # ============== EXPORT XLSX ==============

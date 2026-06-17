@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Download,
   FileSpreadsheet,
+  GitCompare,
   Layers,
   Loader2,
+  Lock,
   Plus,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -33,6 +35,15 @@ import { ANALITICO_ONLY, FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/ou
 import { exportOrcamentoExcel } from "../features/orcamentos/exportOrcamento";
 import { useOrcamentoLinhasContext } from "../features/orcamentos/OrcamentoLinhasContext";
 import { btnAccent, btnMuted } from "../components/ui/buttonClasses";
+import { useAuth } from "../features/auth/AuthContext";
+import { useActiveLocks } from "../features/orcamentos/useActiveLocks";
+import {
+  acquireItemLock,
+  mapEditableFieldToAuditCampo,
+  postAuditLog,
+  releaseItemLock,
+} from "../features/orcamentos/orcamentoEnterpriseApi";
+import { RevisoesPanel } from "../features/orcamentos/RevisoesPanel";
 
 const formatMoney = (value: number) =>
   value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -42,6 +53,9 @@ const formatQty = (value: number) =>
 
 const EDITABLE_NUMERIC_CLASS =
   "w-full min-w-[5rem] rounded border border-slate-200 bg-white px-2 py-1 text-right text-sm tabular-nums focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
+
+const EDITABLE_NUMERIC_LOCKED_CLASS =
+  "w-full min-w-[5rem] rounded border border-orange-300 bg-orange-50 px-2 py-1 text-right text-sm tabular-nums opacity-70 cursor-not-allowed";
 
 function rowClassName(tipo: LinhaAnalitica["tipoLinha"]): string {
   if (tipo === "grupo") return "bg-slate-700 text-white font-bold";
@@ -66,7 +80,15 @@ const OrcamentoAnalitico: React.FC = () => {
     flowState?.nomeProjeto ?? "Orçamento",
   );
   const [wizardKey, setWizardKey] = useState(0);
+  const [showRevisoes, setShowRevisoes] = useState(false);
   const { setOrcamentoLinhas, clearOrcamentoLinhas } = useOrcamentoLinhasContext();
+  const { user } = useAuth();
+  const activeLocks = useActiveLocks(currentUploadId);
+  const lockedBySelfRef = useRef<Set<string>>(new Set());
+
+  const currentUserId = user?.uid ?? "";
+  const currentUserName =
+    user?.displayName?.trim() || user?.email?.trim() || "Engenheiro";
 
   const applyHierarchicalData = useCallback(
     (rawItems: unknown[], uploadId?: string, filename?: string) => {
@@ -202,11 +224,68 @@ const OrcamentoAnalitico: React.FC = () => {
 
   const resumo = useMemo(() => calcularResumoAnalitico(linhas), [linhas]);
 
+  const getLockForItem = useCallback(
+    (itemId: string) => activeLocks.get(itemId) ?? null,
+    [activeLocks],
+  );
+
+  const isLockedByOther = useCallback(
+    (itemId: string) => {
+      const lock = getLockForItem(itemId);
+      return Boolean(lock && lock.user_id !== currentUserId);
+    },
+    [getLockForItem, currentUserId],
+  );
+
+  const handleCellFocus = useCallback(
+    (itemId: string) => {
+      if (!currentUploadId || !currentUserId) return;
+      lockedBySelfRef.current.add(itemId);
+      void acquireItemLock(currentUploadId, itemId, currentUserName).catch(() => undefined);
+    },
+    [currentUploadId, currentUserId, currentUserName],
+  );
+
+  const handleCellBlur = useCallback(
+    (itemId: string) => {
+      if (!currentUploadId) return;
+      lockedBySelfRef.current.delete(itemId);
+      void releaseItemLock(currentUploadId, itemId);
+    },
+    [currentUploadId],
+  );
+
   const handleAnaliticoEdit = useCallback(
     (index: number, field: AnaliticoEditableField, value: string) => {
-      setLinhas((prev) => aplicarEdicaoAnalitica(prev, index, field, value));
+      setLinhas((prev) => {
+        const linha = prev[index];
+        if (!linha) return prev;
+
+        const oldValue =
+          field === "quantidade"
+            ? linha.quantidade
+            : field === "valorUnitario"
+              ? linha.valorUnitario
+              : linha.bdi;
+
+        const parsedNew = value === "" ? 0 : Number(value);
+        const parsedOld = typeof oldValue === "number" ? oldValue : Number(oldValue) || 0;
+
+        if (parsedNew !== parsedOld && currentUploadId) {
+          const itemCodigo = linha.codigo || linha.itemNumero || String(linha.id);
+          void postAuditLog(currentUploadId, {
+            item_codigo: itemCodigo,
+            campo_alterado: mapEditableFieldToAuditCampo(field),
+            valor_antigo: parsedOld,
+            valor_novo: parsedNew,
+            user_name: currentUserName,
+          });
+        }
+
+        return aplicarEdicaoAnalitica(prev, index, field, value);
+      });
     },
-    [],
+    [currentUploadId, currentUserName],
   );
 
   const handleExport = async () => {
@@ -294,6 +373,16 @@ const OrcamentoAnalitico: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {currentUploadId && (
+              <button
+                type="button"
+                className={btnMuted}
+                onClick={() => setShowRevisoes(true)}
+              >
+                <GitCompare className="h-4 w-4" />
+                Gerenciar Revisões
+              </button>
+            )}
             {currentUploadId && (
               <button
                 type="button"
@@ -403,13 +492,31 @@ const OrcamentoAnalitico: React.FC = () => {
                 {linhas.map((linha, index) => {
                   const isEditable =
                     linha.tipoLinha === "item" || linha.tipoLinha === "composicao";
+                  const itemId = String(linha.id);
+                  const rowLock = getLockForItem(itemId);
+                  const lockedByOther = isLockedByOther(itemId);
+                  const lockTooltip = rowLock
+                    ? `O engenheiro ${rowLock.user_name} está editando esta linha agora.`
+                    : undefined;
                   return (
                   <tr
                     key={linha.id}
-                    className={`border-b border-slate-100 ${rowClassName(linha.tipoLinha)}`}
+                    className={`border-b border-slate-100 ${rowClassName(linha.tipoLinha)} ${
+                      lockedByOther ? "ring-1 ring-inset ring-orange-400" : ""
+                    }`}
+                    title={lockedByOther ? lockTooltip : undefined}
                   >
                     <td className="whitespace-nowrap px-3 py-2 tabular-nums">
-                      {linha.itemNumero || linha.rotuloLinha}
+                      <span className="inline-flex items-center gap-1">
+                        {lockedByOther ? (
+                          <Lock
+                            className="h-3.5 w-3.5 shrink-0 text-orange-500"
+                            aria-label={lockTooltip}
+                            title={lockTooltip}
+                          />
+                        ) : null}
+                        {linha.itemNumero || linha.rotuloLinha}
+                      </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">
                       {linha.tipoLinha === "grupo" ? "" : linha.codigo}
@@ -434,11 +541,15 @@ const OrcamentoAnalitico: React.FC = () => {
                           min={0}
                           inputMode="decimal"
                           value={linha.quantidade || ""}
+                          disabled={lockedByOther}
+                          onFocus={() => handleCellFocus(itemId)}
+                          onBlur={() => handleCellBlur(itemId)}
                           onChange={(e) =>
                             handleAnaliticoEdit(index, "quantidade", e.target.value)
                           }
-                          className={EDITABLE_NUMERIC_CLASS}
+                          className={lockedByOther ? EDITABLE_NUMERIC_LOCKED_CLASS : EDITABLE_NUMERIC_CLASS}
                           aria-label={`Quantidade — ${linha.descricao}`}
+                          title={lockedByOther ? lockTooltip : undefined}
                         />
                       ) : null}
                     </td>
@@ -450,9 +561,11 @@ const OrcamentoAnalitico: React.FC = () => {
                           min={0}
                           inputMode="decimal"
                           value={linha.bdi || ""}
+                          disabled={lockedByOther}
                           onChange={(e) => handleAnaliticoEdit(index, "bdi", e.target.value)}
-                          className={EDITABLE_NUMERIC_CLASS}
+                          className={lockedByOther ? EDITABLE_NUMERIC_LOCKED_CLASS : EDITABLE_NUMERIC_CLASS}
                           aria-label={`BDI — ${linha.descricao}`}
+                          title={lockedByOther ? lockTooltip : undefined}
                         />
                       ) : null}
                     </td>
@@ -469,11 +582,15 @@ const OrcamentoAnalitico: React.FC = () => {
                           min={0}
                           inputMode="decimal"
                           value={linha.valorUnitario || ""}
+                          disabled={lockedByOther}
+                          onFocus={() => handleCellFocus(itemId)}
+                          onBlur={() => handleCellBlur(itemId)}
                           onChange={(e) =>
                             handleAnaliticoEdit(index, "valorUnitario", e.target.value)
                           }
-                          className={EDITABLE_NUMERIC_CLASS}
+                          className={lockedByOther ? EDITABLE_NUMERIC_LOCKED_CLASS : EDITABLE_NUMERIC_CLASS}
                           aria-label={`Valor unitário — ${linha.descricao}`}
+                          title={lockedByOther ? lockTooltip : undefined}
                         />
                       ) : null}
                     </td>
@@ -498,6 +615,15 @@ const OrcamentoAnalitico: React.FC = () => {
           </div>
         </div>
       </main>
+
+      {showRevisoes && currentUploadId ? (
+        <RevisoesPanel
+          projectId={currentUploadId}
+          linhas={linhas}
+          userName={currentUserName}
+          onClose={() => setShowRevisoes(false)}
+        />
+      ) : null}
     </div>
   );
 };
