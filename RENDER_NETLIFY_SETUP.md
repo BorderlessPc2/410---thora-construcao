@@ -181,7 +181,43 @@ FRONTEND_URLS=https://www.seudominio.com.br,https://seudominio.com.br
 
 ---
 
-## Parte 4 — Solução de problemas
+## Parte 4 — Evitar sleep do Render (keep-alive)
+
+O plano **Free** do Render dorme após ~15 minutos sem requisições. O projeto inclui duas camadas:
+
+### A) Frontend (automático)
+
+Com `VITE_API_URL` apontando para `*.onrender.com`, o app faz `GET /health` **a cada 30 segundos** enquanto alguém tiver o site aberto no browser.
+
+Variáveis opcionais no Netlify:
+
+```env
+VITE_KEEP_ALIVE_ENABLED=true
+VITE_KEEP_ALIVE_INTERVAL_MS=30000
+```
+
+> Funciona só com aba aberta. Se ninguém usar o site, o Render ainda dorme.
+
+### B) GitHub Actions (24/7, recomendado no Free)
+
+Arquivo: `.github/workflows/render-keep-alive.yml` — ping a cada **10 minutos**.
+
+1. GitHub → repositório → **Settings → Secrets and variables → Actions**
+2. Crie o secret `RENDER_HEALTH_URL`:
+   ```
+   https://four10-thora-construcao.onrender.com/health
+   ```
+3. Faça push do workflow para `main` — passa a rodar sozinho
+
+Alternativa sem código: [UptimeRobot](https://uptimerobot.com) (grátis) monitorando `/health` a cada 5 min.
+
+### Plano Starter no Render
+
+Com instância **Starter** (paga), o serviço **não dorme** — keep-alive vira opcional.
+
+---
+
+## Parte 5 — Solução de problemas
 
 | Sintoma | Causa provável | Solução |
 |---------|----------------|---------|
@@ -195,7 +231,7 @@ FRONTEND_URLS=https://www.seudominio.com.br,https://seudominio.com.br
 
 ---
 
-## Parte 5 — Configuração mínima (sem Redis)
+## Parte 6 — Configuração mínima (sem Redis)
 
 Para começar rápido, **sem Redis/Celery**:
 

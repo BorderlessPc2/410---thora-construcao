@@ -5,11 +5,13 @@ import { Toaster } from "sonner";
 import App from "./App";
 import "./index.css";
 import { AuthProvider } from "./features/auth/AuthContext";
+import { BackendKeepAlive } from "./components/BackendKeepAlive";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
+        <BackendKeepAlive />
         <App />
         <Toaster
           position="top-right"

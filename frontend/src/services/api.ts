@@ -54,6 +54,8 @@ const getAPIBase = () => {
 
 const API_BASE = getAPIBase();
 
+export const getApiBaseUrl = (): string => API_BASE;
+
 console.info(`🌐 API Base: ${API_BASE}`);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -172,6 +174,16 @@ apiClient.interceptors.request.use(async (config) => {
 
   return config;
 });
+
+/** Ping leve em /health (keep-alive periódico, sem retries). */
+export const pingApiHealthLight = async (): Promise<boolean> => {
+  try {
+    const response = await apiClient.get("/health", { timeout: 15000 });
+    return response.data?.status === "online";
+  } catch {
+    return false;
+  }
+};
 
 // ==================== PDF OPERATIONS ====================
 

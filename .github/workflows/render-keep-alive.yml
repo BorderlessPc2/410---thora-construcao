@@ -1,0 +1,27 @@
+# Ping periódico no Render para evitar sleep (free tier ~15 min sem tráfego).
+# Configure o secret RENDER_HEALTH_URL no GitHub:
+#   https://github.com/SEU-USUARIO/SEU-REPO/settings/secrets/actions
+# Valor: https://four10-thora-construcao.onrender.com/health
+
+name: Render keep-alive
+
+on:
+  schedule:
+    # A cada 10 minutos (Render dorme após ~15 min de inatividade)
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping /health
+        run: |
+          URL="${{ secrets.RENDER_HEALTH_URL }}"
+          if [ -z "$URL" ]; then
+            echo "Defina o secret RENDER_HEALTH_URL (ex.: https://seu-app.onrender.com/health)"
+            exit 1
+          fi
+          curl -fsS --max-time 60 "$URL"
+          echo "OK — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
