@@ -7,6 +7,7 @@ import ListaAnalises from "./pages/ListaAnalises";
 import OrcamentoAnalitico from "./pages/OrcamentoAnalitico";
 import OrcamentoSintetico from "./pages/OrcamentoSintetico";
 import CatalogoProdutos from "./pages/CatalogoProdutos";
+import BDICalculator from "./pages/BDICalculator";
 import Reports from "./pages/Reports";
 import AnaliseDetalhada from "./pages/AnaliseDetalhada";
 import Login from "./pages/Login";
@@ -37,6 +38,8 @@ const App = () => {
           element={<AnaliseDetalhada />}
         />
         <Route path="/catalogo" element={<CatalogoProdutos />} />
+        <Route path="/bdi" element={<BDICalculator />} />
+        <Route path="/bdi/:uploadId" element={<BDICalculator />} />
         <Route path="/relatorios" element={<Reports />} />
         <Route path="/analytics" element={<Navigate to="/" replace />} />
       </Route>

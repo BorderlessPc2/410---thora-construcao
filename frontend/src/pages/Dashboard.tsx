@@ -10,6 +10,10 @@ import {
   getOrcamentoTotal,
 } from "../features/orcamentos/orcamentoAnalytics";
 import OrcamentoAnalyticsCharts from "../components/OrcamentoAnalyticsCharts";
+import TendenciaTemporalChart from "../components/dashboard/TendenciaTemporalChart";
+import AlertasInteligentes from "../components/dashboard/AlertasInteligentes";
+import AtividadeRecente from "../components/dashboard/AtividadeRecente";
+import ComparativoOrcamentos from "../components/dashboard/ComparativoOrcamentos";
 import { btnPrimary, btnSecondary } from "../components/ui/buttonClasses";
 
 interface ResumoCardProps {
@@ -170,13 +174,33 @@ const Dashboard: React.FC = () => {
           />
         </div>
 
-        <OrcamentoAnalyticsCharts
-          orcamentos={orcamentos}
-          loading={loading}
-          onRefresh={() => void fetchOrcamentos()}
-        />
+        {/* Linha 2: Tendência + Alertas */}
+        <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="lg:col-span-2">
+            <TendenciaTemporalChart orcamentos={orcamentos} loading={loading} />
+          </div>
+          <div className="lg:col-span-1">
+            <AlertasInteligentes orcamentos={orcamentos} loading={loading} />
+          </div>
+        </div>
 
-        <div className="mt-10 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        {/* Linha 3: Analytics + Atividade recente */}
+        <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2">
+          <OrcamentoAnalyticsCharts
+            orcamentos={orcamentos}
+            loading={loading}
+            onRefresh={() => void fetchOrcamentos()}
+            sectionClassName="mt-0"
+          />
+          <AtividadeRecente orcamentos={orcamentos} loading={loading} />
+        </div>
+
+        {/* Linha 4: Comparativo (colapsável) */}
+        <div className="mb-10">
+          <ComparativoOrcamentos orcamentos={orcamentos} loading={loading} />
+        </div>
+
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-3 border-b border-slate-200 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-5">
             <h2 className="text-lg font-semibold text-slate-900">
               Orçamentos recentes

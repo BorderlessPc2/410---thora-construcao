@@ -7,6 +7,7 @@ import {
   X,
   LogOut,
   Upload,
+  Calculator,
   Package,
   ListChecks,
 } from "lucide-react";
@@ -38,6 +39,9 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
     if (path === "/lista-analises") {
       return location.pathname.startsWith("/lista-analises");
     }
+    if (path === "/bdi") {
+      return location.pathname === "/bdi" || location.pathname.startsWith("/bdi/");
+    }
     return (
       location.pathname === path || location.pathname.startsWith(`${path}/`)
     );
@@ -48,6 +52,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
     { path: "/orcamento", label: "Curva ABC", icon: Upload },
     { path: "/lista-analises", label: "Lista de análises", icon: ListChecks },
     { path: "/catalogo", label: "Meu Catálogo", icon: Package },
+    { path: "/bdi", label: "BDI", icon: Calculator },
     { path: "/relatorios", label: "Relatórios", icon: BarChart3 },
   ];
 

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   TrendingUp,
@@ -9,6 +9,7 @@ import {
   Download,
   ChevronRight,
   Loader2,
+  Calculator,
 } from "lucide-react";
 import {
   BarChart,
@@ -22,6 +23,11 @@ import {
   Cell,
 } from "recharts";
 import { standardizeItemsWithAI, getCurvaABC, analyzeWithAI } from "../services/api";
+import ExportModal from "../components/ExportModal";
+import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
+import { useAuth } from "../features/auth/AuthContext";
+import { getLatestBDIAplicado } from "../features/bdi/bdiAplicadoRepository";
+import type { BDIAplicado } from "../types/bdi";
 
 interface Item {
   id: string;
@@ -64,6 +70,22 @@ const CurvaABC: React.FC = () => {
     confianca?: number;
     warnings?: string[];
   } | null>(null);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const { user } = useAuth();
+  const [bdiAplicado, setBdiAplicado] = useState<BDIAplicado | null>(null);
+
+  const flatExportItems = useMemo(
+    () =>
+      items.map((item) => ({
+        descricao: item.descricao,
+        quantidade: item.quantidade,
+        unidade: item.unidade,
+        valor_unitario: item.valor_unitario,
+        valor_total: item.valor_total,
+        classification: item.classification,
+      })),
+    [items],
+  );
 
   const toNumber = (value: unknown): number => {
     const n = Number(value);
@@ -175,6 +197,14 @@ const CurvaABC: React.FC = () => {
 
     fetchCurvaABC();
   }, [uploadId, location.state]);
+
+  useEffect(() => {
+    if (!uploadId || !user?.uid) {
+      setBdiAplicado(null);
+      return;
+    }
+    void getLatestBDIAplicado(user.uid, uploadId).then(setBdiAplicado);
+  }, [uploadId, user?.uid]);
 
   // Calcula resumo
   const summary = useMemo(() => {
@@ -389,6 +419,28 @@ const CurvaABC: React.FC = () => {
         {/* Dados carregados */}
         {!loading && !error && (
           <>
+            {bdiAplicado && uploadId && (
+              <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm text-blue-900">
+                    Este orçamento considera BDI de{" "}
+                    <strong>
+                      {bdiAplicado.bdiPercentual.toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2,
+                      })}
+                      %
+                    </strong>
+                  </p>
+                  <Link
+                    to={`/bdi/${uploadId}`}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:underline"
+                  >
+                    <Calculator className="h-4 w-4" />
+                    Ver detalhes
+                  </Link>
+                </div>
+              </div>
+            )}
             {items.length === 0 ? (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-8">
                 <div className="flex gap-3">
@@ -652,18 +704,38 @@ const CurvaABC: React.FC = () => {
           >
             ← Voltar
           </button>
-          <button
-            onClick={handleAiStandardize}
-            disabled={aiLoading}
-            className={`px-6 py-2 rounded-lg transition font-medium flex items-center gap-2 ${
-              aiLoading
-                ? "bg-blue-400 text-white cursor-not-allowed"
-                : "bg-blue-600 text-white hover:bg-blue-700"
-            }`}
-          >
-            {aiLoading ? "Processando IA..." : "Próximo: IA"} <ChevronRight size={18} />
-          </button>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={() => setExportModalOpen(true)}
+              disabled={items.length === 0}
+              className="px-6 py-2 rounded-lg transition font-medium flex items-center gap-2 bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <Download size={18} />
+              Exportar
+            </button>
+            <button
+              onClick={handleAiStandardize}
+              disabled={aiLoading}
+              className={`px-6 py-2 rounded-lg transition font-medium flex items-center gap-2 ${
+                aiLoading
+                  ? "bg-blue-400 text-white cursor-not-allowed"
+                  : "bg-blue-600 text-white hover:bg-blue-700"
+              }`}
+            >
+              {aiLoading ? "Processando IA..." : "Próximo: IA"} <ChevronRight size={18} />
+            </button>
+          </div>
         </div>
+
+        <ExportModal
+          open={exportModalOpen}
+          onClose={() => setExportModalOpen(false)}
+          uploadId={uploadId}
+          nomeProjeto={location.state?.nomeProjeto as string | undefined}
+          flatItems={flatExportItems}
+          defaultModelos={CURVA_ABC_ONLY}
+        />
               </>
             )}
           </>

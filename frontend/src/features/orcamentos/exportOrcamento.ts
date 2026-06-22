@@ -34,6 +34,9 @@ export async function exportOrcamentoExcel(options: {
   flatItems?: unknown[];
   modelosSelecionados: OutputModelsSelection;
   nomeProjeto?: string;
+  template?: "novacap" | "sinapi" | "livre";
+  colunas?: string[];
+  compareIds?: string[];
 }): Promise<{ success: boolean; message: string }> {
   const items = resolveExportItems(options);
   if (items.length === 0) {
@@ -43,5 +46,8 @@ export async function exportOrcamentoExcel(options: {
   return exportToXLSX(items, {
     modelosSelecionados: options.modelosSelecionados,
     nomeProjeto: options.nomeProjeto,
+    template: options.template,
+    colunas: options.colunas,
+    compareIds: options.compareIds,
   });
 }

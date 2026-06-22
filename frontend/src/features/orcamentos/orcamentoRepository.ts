@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocs,
+  limit,
   orderBy,
   query,
   setDoc,
@@ -36,7 +37,11 @@ const mapOrcamentoDoc = (
 ): Orcamento => {
   const data = snap.data() ?? {};
 
-  const uploadedAt = toDateIfPossible(data.uploadedAt) ?? new Date(0);
+  const uploadedAt =
+    toDateIfPossible(data.uploadedAt) ??
+    toDateIfPossible(data.createdAt) ??
+    toDateIfPossible(data.dataUpload) ??
+    new Date(0);
   const extractedAt = toDateIfPossible(data.extractedAt);
   const updatedAt = toDateIfPossible(data.updatedAt);
 
@@ -69,6 +74,27 @@ const mapOrcamentoDoc = (
     errorMessage: (data.errorMessage as string | null | undefined) ?? null,
   };
 };
+
+export async function getOrcamentoByUploadId(
+  userId: string,
+  uploadId: string,
+): Promise<Orcamento | null> {
+  const q = query(
+    collection(db, "orcamentos"),
+    where("userId", "==", userId),
+    where("uploadId", "==", uploadId),
+    limit(1),
+  );
+
+  try {
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+    return mapOrcamentoDoc(snap.docs[0]);
+  } catch (error) {
+    console.error("[Firestore] Falha ao buscar orçamento:", { userId, uploadId, error });
+    throw error;
+  }
+}
 
 export async function listOrcamentosByUserId(
   userId: string,

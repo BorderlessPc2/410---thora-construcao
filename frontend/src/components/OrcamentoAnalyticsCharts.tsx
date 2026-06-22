@@ -43,6 +43,7 @@ interface OrcamentoAnalyticsChartsProps {
   onRefresh?: () => void;
   title?: string;
   subtitle?: string;
+  sectionClassName?: string;
 }
 
 const OrcamentoAnalyticsCharts: React.FC<OrcamentoAnalyticsChartsProps> = ({
@@ -51,6 +52,7 @@ const OrcamentoAnalyticsCharts: React.FC<OrcamentoAnalyticsChartsProps> = ({
   onRefresh,
   title = "Análise dos orçamentos",
   subtitle = "Dados consolidados dos orçamentos exportados e finalizados",
+  sectionClassName = "mt-10",
 }) => {
   const [dateRange, setDateRange] = useState("30days");
   const [isExporting, setIsExporting] = useState(false);
@@ -143,7 +145,7 @@ const OrcamentoAnalyticsCharts: React.FC<OrcamentoAnalyticsChartsProps> = ({
   };
 
   return (
-    <section className="mt-10">
+    <section className={sectionClassName}>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-bold text-slate-900 sm:text-2xl">{title}</h2>

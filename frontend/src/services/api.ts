@@ -3,6 +3,7 @@ import {
   DEFAULT_OUTPUT_MODELS,
   type OutputModelsSelection,
 } from "../features/orcamentos/outputModels";
+import type { BDIComponente, BDIAplicado, BDIResultado, BDITipoAplicacao } from "../types/bdi";
 import {
   saveOrcamento,
   getOrcamentoByUploadId,
@@ -706,7 +707,51 @@ export type ExportXlsxPayload = {
   items: unknown[];
   modelos_selecionados: OutputModelsSelection;
   nome_projeto?: string;
+  template?: "novacap" | "sinapi" | "livre";
+  colunas?: string[];
+  compare_ids?: string[];
 };
+
+export type ExportPdfPayload = {
+  upload_id: string;
+  include_cover?: boolean;
+  include_summary?: boolean;
+  include_abc_chart?: boolean;
+  company_name?: string;
+  responsible?: string;
+  logo_base64?: string;
+};
+
+export const LIVRE_EXPORT_COLUMNS: { id: string; label: string }[] = [
+  { id: "codigo", label: "Código" },
+  { id: "descricao", label: "Descrição" },
+  { id: "unidade", label: "Unidade" },
+  { id: "quantidade", label: "Quantidade" },
+  { id: "precoUnitario", label: "Preço Unitário" },
+  { id: "precoTotal", label: "Preço Total" },
+  { id: "bdi", label: "BDI (%)" },
+  { id: "classification", label: "Classe ABC" },
+  { id: "grupo", label: "Grupo" },
+  { id: "banco", label: "Banco" },
+  { id: "tipo", label: "Tipo" },
+];
+
+async function downloadBlobResponse(
+  response: { data: Blob; headers: Record<string, string> },
+  fallbackName: string,
+): Promise<void> {
+  const disposition = response.headers["content-disposition"] ?? "";
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const filename = match?.[1] ?? fallbackName;
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  link.parentNode?.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
 
 // Exportar planilha para XLSX (abas conforme modelos selecionados)
 export const exportToXLSX = async (
@@ -714,6 +759,9 @@ export const exportToXLSX = async (
   options?: {
     modelosSelecionados?: OutputModelsSelection;
     nomeProjeto?: string;
+    template?: "novacap" | "sinapi" | "livre";
+    colunas?: string[];
+    compareIds?: string[];
   },
 ) => {
   try {
@@ -721,6 +769,9 @@ export const exportToXLSX = async (
       items,
       modelos_selecionados: options?.modelosSelecionados ?? DEFAULT_OUTPUT_MODELS,
       nome_projeto: options?.nomeProjeto,
+      template: options?.template ?? "novacap",
+      colunas: options?.colunas,
+      compare_ids: options?.compareIds,
     };
 
     const response = await apiClient.post("/api/export-xlsx", payload, {
@@ -733,21 +784,94 @@ export const exportToXLSX = async (
       .replace(/\s+/g, "_")
       .slice(0, 40) || "orcamento";
 
-    const url = window.URL.createObjectURL(new Blob([response.data]));
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute(
-      "download",
+    await downloadBlobResponse(
+      response,
       `${safeName}_${new Date().toISOString().split("T")[0]}.xlsx`,
     );
-    document.body.appendChild(link);
-    link.click();
-    link.parentNode?.removeChild(link);
-    window.URL.revokeObjectURL(url);
 
     return { success: true, message: "✅ Arquivo exportado com sucesso!" };
-  } catch (error: any) {
-    throw new Error(error.response?.data?.detail || "Erro ao exportar arquivo");
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: Blob | { detail?: string } } };
+    if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text();
+        const parsed = JSON.parse(text) as { detail?: string };
+        throw new Error(parsed.detail || "Erro ao exportar arquivo");
+      } catch {
+        throw new Error("Erro ao exportar arquivo");
+      }
+    }
+    throw new Error(
+      (err.response?.data as { detail?: string })?.detail || "Erro ao exportar arquivo",
+    );
+  }
+};
+
+export const exportToPDF = async (payload: ExportPdfPayload): Promise<void> => {
+  try {
+    const response = await apiClient.post("/api/export-pdf", payload, {
+      responseType: "blob",
+    });
+    const datePart = new Date().toISOString().split("T")[0];
+    await downloadBlobResponse(response, `orcamento_${datePart}.pdf`);
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: Blob | { detail?: string } } };
+    if (err.response?.data instanceof Blob) {
+      try {
+        const text = await err.response.data.text();
+        const parsed = JSON.parse(text) as { detail?: string };
+        throw new Error(parsed.detail || "Erro ao exportar PDF");
+      } catch {
+        throw new Error("Erro ao exportar PDF");
+      }
+    }
+    throw new Error(
+      (err.response?.data as { detail?: string })?.detail || "Erro ao exportar PDF",
+    );
+  }
+};
+
+// ==================== BDI OPERATIONS ====================
+
+export const calculateBDI = async (
+  componentes: BDIComponente[],
+): Promise<BDIResultado & { bdi_percentual?: number; fator_bdi?: number }> => {
+  try {
+    const response = await apiClient.post("/api/bdi/calculate", { componentes });
+    const data = response.data;
+    return {
+      bdiPercentual: data.bdi_percentual ?? data.bdiPercentual ?? 0,
+      fatorBDI: data.fator_bdi ?? data.fatorBDI ?? 1,
+      breakdown: data.breakdown ?? [],
+    };
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } } };
+    throw new Error(err.response?.data?.detail || "Erro ao calcular BDI");
+  }
+};
+
+export const applyBDI = async (payload: {
+  upload_id: string;
+  bdi_percentual: number;
+  bdi_config_id?: string;
+  tipo_aplicacao?: BDITipoAplicacao;
+}): Promise<BDIAplicado> => {
+  try {
+    const response = await apiClient.post("/api/bdi/apply", payload);
+    const data = response.data;
+    return {
+      uploadId: data.uploadId ?? payload.upload_id,
+      bdiConfigId: data.bdiConfigId ?? payload.bdi_config_id ?? "",
+      bdiPercentual: data.bdiPercentual ?? payload.bdi_percentual,
+      valorSemBDI: data.valorSemBDI ?? 0,
+      valorComBDI: data.valorComBDI ?? 0,
+      economia: data.economia ?? 0,
+      dataAplicacao: data.dataAplicacao ?? new Date().toISOString(),
+      itensImpactados: data.itensImpactados ?? 0,
+    };
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: string } } };
+    throw new Error(err.response?.data?.detail || "Erro ao aplicar BDI");
   }
 };
 

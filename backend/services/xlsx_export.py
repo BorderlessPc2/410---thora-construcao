@@ -703,13 +703,449 @@ def build_export_workbook(
     return wb, sheets_created
 
 
+# ---------------------------------------------------------------------------
+# Extended export: templates SINAPI / Livre, comparativo e formatação padrão
+# ---------------------------------------------------------------------------
+
+SINAPI_HEADER_FILL = PatternFill(start_color="1E3A5F", end_color="1E3A5F", fill_type="solid")
+SINAPI_HEADER_FONT = Font(bold=True, color="FFFFFF", size=14)
+SINAPI_ALT_FILL = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+SINAPI_TOTAL_FILL = PatternFill(start_color="FFD700", end_color="FFD700", fill_type="solid")
+COMPARE_GREEN_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+COMPARE_RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+
+LIVRE_COLUMN_LABELS: Dict[str, str] = {
+    "codigo": "Código",
+    "code": "Código",
+    "codigo_sinapi": "Código SINAPI",
+    "descricao": "Descrição",
+    "description": "Descrição",
+    "unidade": "Unidade",
+    "unit": "Unidade",
+    "quantidade": "Quantidade",
+    "qty": "Quantidade",
+    "quantity": "Quantidade",
+    "precoUnitario": "Preço Unitário",
+    "preco_unitario": "Preço Unitário",
+    "valor_unitario": "Preço Unitário",
+    "unitPrice": "Preço Unitário",
+    "unitValue": "Preço Unitário",
+    "precoTotal": "Preço Total",
+    "preco_total": "Preço Total",
+    "valor_total": "Preço Total",
+    "totalValue": "Preço Total",
+    "lineTotal": "Preço Total",
+    "bdi": "BDI (%)",
+    "classification": "Classe ABC",
+    "class": "Classe ABC",
+    "grupo": "Grupo",
+    "banco": "Banco",
+    "tipo": "Tipo",
+}
+
+DEFAULT_LIVRE_COLUMNS = [
+    "descricao",
+    "unidade",
+    "quantidade",
+    "precoUnitario",
+    "precoTotal",
+]
+
+SINAPI_HEADERS = [
+    "Código SINAPI",
+    "Descrição",
+    "Unidade",
+    "Quantidade",
+    "Preço Unitário",
+    "Preço Total",
+    "BDI (%)",
+    "Total com BDI",
+]
+
+
+def _field_value_for_livre(row: Dict[str, Any], field: str) -> Any:
+    aliases: Dict[str, List[str]] = {
+        "descricao": ["descricao", "description"],
+        "codigo": ["codigo", "code"],
+        "codigo_sinapi": ["codigo_sinapi", "codigo", "code", "banco"],
+        "unidade": ["unidade", "unit"],
+        "quantidade": ["quantidade", "qty", "quantity"],
+        "precoUnitario": ["precoUnitario", "preco_unitario", "valor_unitario", "unitPrice", "unitValue"],
+        "precoTotal": ["precoTotal", "preco_total", "valor_total", "totalValue", "lineTotal", "total_com_bdi"],
+        "bdi": ["bdi", "BDI"],
+        "classification": ["classification", "class"],
+        "grupo": ["grupo"],
+        "banco": ["banco"],
+        "tipo": ["tipo", "tipo_linha"],
+    }
+    keys = aliases.get(field, [field])
+    for key in keys:
+        if key in row and row[key] not in (None, ""):
+            return row[key]
+    return ""
+
+
+def _auto_width_columns(ws, max_width: int = 50) -> None:
+    if not get_column_letter:
+        return
+    for col_cells in ws.columns:
+        col_letter = get_column_letter(col_cells[0].column)
+        max_len = 0
+        for cell in col_cells:
+            if cell.value is None:
+                continue
+            max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), max_width)
+
+
+def _apply_sheet_standards(
+    ws,
+    *,
+    header_row: int = 1,
+    value_cols: List[int] | None = None,
+    qty_cols: List[int] | None = None,
+    pct_cols: List[int] | None = None,
+) -> None:
+    if not get_column_letter:
+        return
+    last_col = ws.max_column or 1
+    last_row = ws.max_row or header_row
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1).coordinate
+    if last_row > header_row:
+        ws.auto_filter.ref = (
+            f"A{header_row}:{get_column_letter(last_col)}{last_row}"
+        )
+    for col in value_cols or []:
+        for row in range(header_row + 1, last_row + 1):
+            cell = ws.cell(row=row, column=col)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = 'R$ #.##0,00'
+    for col in qty_cols or []:
+        for row in range(header_row + 1, last_row + 1):
+            cell = ws.cell(row=row, column=col)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "#.##0,000"
+    for col in pct_cols or []:
+        for row in range(header_row + 1, last_row + 1):
+            cell = ws.cell(row=row, column=col)
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "0,00%"
+    _auto_width_columns(ws)
+
+
+def _executive_rows_from_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows, _ = prepare_curva_abc_rows(items)
+    if rows:
+        return rows
+    prepared: List[Dict[str, Any]] = []
+    for raw in items:
+        if isinstance(raw, dict) and _is_executive_row(raw):
+            prepared.append(_normalize_base_row(raw))
+    return prepared
+
+
+def gerar_aba_sinapi(ws, items: List[Dict[str, Any]]) -> None:
+    ws.title = "Planilha SINAPI"
+    rows = _executive_rows_from_items(items)
+
+    for col_num, header in enumerate(SINAPI_HEADERS, 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.value = header
+        cell.font = SINAPI_HEADER_FONT
+        cell.fill = SINAPI_HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = THIN_BORDER
+
+    total_com_bdi = 0.0
+    for idx, row_data in enumerate(rows):
+        row_num = idx + 2
+        stripe = SINAPI_ALT_FILL if idx % 2 else ZEBRA_WHITE
+        bdi = _coerce_bdi(row_data.get("bdi"))
+        qty = _coerce_number(row_data.get("qty"))
+        unit_sem = _coerce_number(row_data.get("unit_com_bdi"))
+        if unit_sem <= 0:
+            factor = _bdi_factor(bdi)
+            unit_sem = _coerce_number(row_data.get("unit_com_bdi")) / factor if factor else 0
+        preco_total = qty * unit_sem if qty and unit_sem else 0
+        total_linha = preco_total * _bdi_factor(bdi) if preco_total else row_data.get("total_com_bdi", 0)
+        total_com_bdi += float(total_linha or 0)
+
+        values = [
+            row_data.get("code", ""),
+            row_data.get("description", ""),
+            row_data.get("unit", ""),
+            qty or None,
+            unit_sem or None,
+            preco_total or None,
+            bdi / 100 if bdi else None,
+            total_linha or None,
+        ]
+        for col_num, value in enumerate(values, 1):
+            cell = ws.cell(row=row_num, column=col_num)
+            cell.value = value
+            cell.fill = stripe
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(
+                horizontal="right" if col_num >= 4 else "left",
+                vertical="center",
+                wrap_text=col_num == 2,
+            )
+
+    total_row = len(rows) + 2
+    ws.cell(row=total_row, column=7).value = "TOTAL"
+    ws.cell(row=total_row, column=7).font = Font(bold=True)
+    ws.cell(row=total_row, column=8).value = total_com_bdi
+    ws.cell(row=total_row, column=8).font = Font(bold=True)
+    ws.cell(row=total_row, column=8).fill = SINAPI_TOTAL_FILL
+    ws.cell(row=total_row, column=8).number_format = 'R$ #.##0,00'
+
+    _apply_sheet_standards(
+        ws,
+        header_row=1,
+        value_cols=[5, 6, 8],
+        qty_cols=[4],
+        pct_cols=[7],
+    )
+
+
+def gerar_aba_livre(ws, items: List[Dict[str, Any]], colunas: List[str] | None) -> None:
+    ws.title = "Exportação Personalizada"
+    selected = colunas or DEFAULT_LIVRE_COLUMNS
+    if not selected:
+        selected = DEFAULT_LIVRE_COLUMNS
+
+    headers = [LIVRE_COLUMN_LABELS.get(c, c) for c in selected]
+    for col_num, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_num)
+        cell.value = header
+        cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    rows = _executive_rows_from_items(items)
+    if not rows:
+        rows = [_normalize_base_row(r) for r in items if isinstance(r, dict)]
+
+    value_cols: List[int] = []
+    qty_cols: List[int] = []
+    pct_cols: List[int] = []
+
+    for idx, row_data in enumerate(rows):
+        row_num = idx + 2
+        for col_num, field in enumerate(selected, 1):
+            if field in ("precoUnitario", "precoTotal", "preco_unitario", "preco_total", "valor_unitario", "valor_total"):
+                value_cols.append(col_num)
+            if field in ("quantidade", "qty", "quantity"):
+                qty_cols.append(col_num)
+            if field in ("bdi",):
+                pct_cols.append(col_num)
+
+            raw = dict(row_data)
+            if field == "precoUnitario":
+                val = _coerce_number(raw.get("unit_com_bdi") or raw.get("valor_unitario"))
+            elif field == "precoTotal":
+                val = _coerce_number(raw.get("total_com_bdi") or raw.get("valor_total"))
+            else:
+                val = _field_value_for_livre(raw, field)
+            ws.cell(row=row_num, column=col_num).value = val
+
+    _apply_sheet_standards(
+        ws,
+        header_row=1,
+        value_cols=sorted(set(value_cols)),
+        qty_cols=sorted(set(qty_cols)),
+        pct_cols=sorted(set(pct_cols)),
+    )
+
+
+def _unit_price_from_row(row: Dict[str, Any]) -> float:
+    normalized = _normalize_base_row(row)
+    unit = _coerce_number(normalized.get("unit_com_bdi"))
+    if unit > 0:
+        return unit
+    qty = _coerce_number(normalized.get("qty"))
+    total = _coerce_number(normalized.get("total_com_bdi"))
+    return total / qty if qty > 0 else 0.0
+
+
+def _description_key(row: Dict[str, Any]) -> str:
+    return str(row.get("description") or row.get("descricao") or "").strip().lower()
+
+
+def gerar_abas_comparativo(
+    wb,
+    budgets: List[Dict[str, Any]],
+) -> None:
+    """budgets: [{upload_id, nome, items}, ...] até 3."""
+    if not budgets or len(budgets) < 2:
+        return
+
+    budget_rows: List[Tuple[str, List[Dict[str, Any]]]] = []
+    for i, budget in enumerate(budgets[:3]):
+        items = budget.get("items") or []
+        rows = _executive_rows_from_items(items)
+        sheet_name = f"Orçamento {i + 1}"[:31]
+        ws = wb.create_sheet(sheet_name)
+        headers = ["Código", "Descrição", "Unidade", "Qtd.", "Preço Unit.", "Total", "Classe"]
+        _write_header_row(ws, headers)
+        for idx, row_data in enumerate(rows):
+            row_num = idx + 2
+            values = [
+                row_data.get("code", ""),
+                row_data.get("description", ""),
+                row_data.get("unit", ""),
+                row_data.get("qty", 0),
+                row_data.get("unit_com_bdi", 0),
+                row_data.get("total_com_bdi", 0),
+                row_data.get("classification", ""),
+            ]
+            for col_num, value in enumerate(values, 1):
+                ws.cell(row=row_num, column=col_num).value = value
+        _apply_sheet_standards(ws, header_row=1, value_cols=[5, 6], qty_cols=[4])
+        budget_rows.append((sheet_name, rows))
+
+    ws_cmp = wb.create_sheet("Comparativo")
+    cmp_headers = [
+        "Descrição",
+        "Orç. 1 — P. Unit.",
+        "Orç. 2 — P. Unit.",
+        "Orç. 3 — P. Unit.",
+        "Dif. % vs Orç. 1",
+        "Menor preço",
+    ]
+    for col_num, header in enumerate(cmp_headers, 1):
+        cell = ws_cmp.cell(row=1, column=col_num)
+        cell.value = header
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.border = THIN_BORDER
+
+    price_maps: List[Dict[str, float]] = []
+    all_descs: set[str] = set()
+    for _, rows in budget_rows:
+        pmap: Dict[str, float] = {}
+        for row in rows:
+            key = _description_key(row)
+            if not key:
+                continue
+            all_descs.add(key)
+            pmap[key] = _unit_price_from_row(row)
+        price_maps.append(pmap)
+
+    sorted_descs = sorted(all_descs)
+    for idx, desc_key in enumerate(sorted_descs):
+        row_num = idx + 2
+        display_desc = desc_key
+        for _, rows in budget_rows:
+            for row in rows:
+                if _description_key(row) == desc_key:
+                    display_desc = str(row.get("description") or row.get("descricao") or desc_key)
+                    break
+
+        prices: List[float | None] = []
+        for pmap in price_maps:
+            val = pmap.get(desc_key)
+            prices.append(val if val and val > 0 else None)
+
+        ws_cmp.cell(row=row_num, column=1).value = display_desc
+        min_price: float | None = None
+        valid_prices = [p for p in prices if p is not None and p > 0]
+        if valid_prices:
+            min_price = min(valid_prices)
+
+        for col_offset, price in enumerate(prices):
+            cell = ws_cmp.cell(row=row_num, column=2 + col_offset)
+            if price is None:
+                cell.value = "-"
+            else:
+                cell.value = price
+                cell.number_format = 'R$ #.##0,00'
+                if min_price is not None and price > min_price * 1.2:
+                    cell.fill = COMPARE_RED_FILL
+
+        p1 = prices[0]
+        others = [p for p in prices[1:] if p is not None and p > 0]
+        diff_cell = ws_cmp.cell(row=row_num, column=5)
+        if p1 and others:
+            avg_other = sum(others) / len(others)
+            diff_pct = ((p1 - avg_other) / avg_other) if avg_other else 0
+            diff_cell.value = diff_pct
+            diff_cell.number_format = "0,00%"
+        else:
+            diff_cell.value = "-"
+
+        min_cell = ws_cmp.cell(row=row_num, column=6)
+        if min_price is not None:
+            min_cell.value = min_price
+            min_cell.number_format = 'R$ #.##0,00'
+            min_cell.fill = COMPARE_GREEN_FILL
+        else:
+            min_cell.value = "-"
+
+    _apply_sheet_standards(ws_cmp, header_row=1, value_cols=[2, 3, 4, 6], pct_cols=[5])
+
+
+def build_export_workbook_extended(
+    items: List[Dict[str, Any]],
+    modelos_selecionados: Dict[str, bool] | None,
+    *,
+    nome_projeto: str | None = None,
+    template: str = "novacap",
+    colunas: List[str] | None = None,
+    compare_budgets: List[Dict[str, Any]] | None = None,
+) -> Tuple[Any, List[str]]:
+    template_key = (template or "novacap").strip().lower()
+    sheets_created: List[str] = []
+
+    if template_key == "sinapi":
+        if not Workbook:
+            raise RuntimeError("openpyxl não está instalado")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Planilha SINAPI"
+        gerar_aba_sinapi(ws, items)
+        sheets_created.append("Planilha SINAPI")
+    elif template_key == "livre":
+        if not Workbook:
+            raise RuntimeError("openpyxl não está instalado")
+        wb = Workbook()
+        ws = wb.active
+        gerar_aba_livre(ws, items, colunas)
+        sheets_created.append("Exportação Personalizada")
+    else:
+        wb, sheets_created = build_export_workbook(
+            items, modelos_selecionados, nome_projeto=nome_projeto
+        )
+
+    if compare_budgets and len(compare_budgets) >= 2:
+        gerar_abas_comparativo(wb, compare_budgets)
+        sheets_created.extend(
+            [f"Orçamento {i + 1}" for i in range(min(3, len(compare_budgets)))]
+        )
+        sheets_created.append("Comparativo")
+
+    if not sheets_created:
+        raise ValueError("Nenhuma aba pôde ser gerada.")
+
+    return wb, sheets_created
+
+
 def save_export_workbook(
     items: List[Dict[str, Any]],
     modelos_selecionados: Dict[str, bool] | None,
     temp_folder: Path,
     nome_projeto: str | None = None,
+    template: str = "novacap",
+    colunas: List[str] | None = None,
+    compare_budgets: List[Dict[str, Any]] | None = None,
 ) -> Tuple[Path, str]:
-    wb, _ = build_export_workbook(items, modelos_selecionados, nome_projeto=nome_projeto)
+    wb, _ = build_export_workbook_extended(
+        items,
+        modelos_selecionados,
+        nome_projeto=nome_projeto,
+        template=template,
+        colunas=colunas,
+        compare_budgets=compare_budgets,
+    )
     stem = "orcamento"
     if nome_projeto and nome_projeto.strip():
         safe = re.sub(r"[^\w\s-]", "", nome_projeto.strip(), flags=re.UNICODE)

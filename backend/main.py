@@ -95,6 +95,7 @@ from services.upload_meta import save_upload_meta as _save_upload_meta_service
 from services.report_pdf import build_analysis_pdf_bytes
 from services.ai_audit_logger import log_ai_exchange
 from services.xlsx_export import save_export_workbook
+from services.pdf_export import generate_orcamento_pdf
 from services.analitico_normalize import normalize_hierarchical_analitico
 from services.hybrid_extraction import merge_parser_as_primary
 
@@ -1452,6 +1453,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from routers.bdi_router import router as bdi_router, configure_bdi_auth
+
+configure_bdi_auth(get_current_user_id)
+app.include_router(bdi_router)
 
 # ============== STATIC FILES (FRONTEND) ==============
 # Servir arquivos estáticos do frontend build
@@ -4492,6 +4498,19 @@ class ExportXlsxRequest(BaseModel):
         }
     )
     nome_projeto: str | None = None
+    template: str = "novacap"
+    colunas: List[str] | None = None
+    compare_ids: List[str] | None = None
+
+
+class ExportPdfRequest(BaseModel):
+    upload_id: str
+    include_cover: bool = True
+    include_summary: bool = True
+    include_abc_chart: bool = True
+    company_name: str | None = None
+    responsible: str | None = None
+    logo_base64: str | None = None
 
 
 # ============== AUDITORIA, VERSIONAMENTO E LOCKS ==============
@@ -4650,30 +4669,61 @@ async def export_xlsx(
 ):
     """
     Exporta XLSX com abas condicionais: Analítico, Sintético e/ou Curva ABC.
+  Suporta templates novacap (padrão), sinapi, livre e comparativo opcional.
     """
     try:
         items = payload.items or []
         if not items:
             raise HTTPException(status_code=400, detail="Nenhum item para exportar.")
 
+        compare_budgets = None
+        if payload.compare_ids:
+            compare_ids = [cid for cid in payload.compare_ids if cid][:3]
+            if len(compare_ids) >= 2:
+                compare_budgets = []
+                for cid in compare_ids:
+                    doc = OrcamentoFirestore.get_orcamento_by_upload_id(cid, user_id=user_id)
+                    if not doc:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"Orçamento não encontrado: {cid}",
+                        )
+                    doc_items = doc.get("items") or []
+                    if not doc_items:
+                        items_data = doc.get("itemsData") or doc.get("items_data") or {}
+                        if isinstance(items_data, dict):
+                            doc_items = items_data.get("items") or items_data.get("hierarchical_items") or []
+                    compare_budgets.append(
+                        {
+                            "upload_id": cid,
+                            "nome": doc.get("nomeProjeto") or doc.get("filename") or cid,
+                            "items": doc_items,
+                        }
+                    )
+
         file_path, filename = save_export_workbook(
             items,
             payload.modelos_selecionados,
             TEMP_FOLDER,
             nome_projeto=payload.nome_projeto,
+            template=payload.template or "novacap",
+            colunas=payload.colunas,
+            compare_budgets=compare_budgets,
         )
 
         logger.info(
-            "✅ XLSX gerado: %s (%s itens, modelos=%s)",
+            "✅ XLSX gerado: %s (%s itens, modelos=%s, template=%s)",
             file_path,
             len(items),
             payload.modelos_selecionados,
+            payload.template,
         )
 
         return FileResponse(
             path=file_path,
             filename=filename,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     except ValueError as exc:
@@ -4682,9 +4732,58 @@ async def export_xlsx(
         raise
     except Exception as e:
         logger.error(f"❌ Erro ao exportar XLSX: {str(e)}")
+        print(f"[export-xlsx] Erro: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao gerar Excel: {str(e)}",
+        )
+
+
+@app.post("/api/export-pdf")
+async def export_pdf(
+    payload: ExportPdfRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Gera PDF profissional do orçamento."""
+    try:
+        orcamento = OrcamentoFirestore.get_orcamento_by_upload_id(
+            payload.upload_id, user_id=user_id
+        )
+        if not orcamento:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Orçamento não encontrado: {payload.upload_id}",
+            )
+
+        file_path, filename = generate_orcamento_pdf(
+            orcamento,
+            include_cover=payload.include_cover,
+            include_summary=payload.include_summary,
+            include_abc_chart=payload.include_abc_chart,
+            company_name=payload.company_name,
+            responsible=payload.responsible,
+            logo_base64=payload.logo_base64,
+            temp_folder=TEMP_FOLDER,
+        )
+
+        logger.info("✅ PDF gerado: %s (upload_id=%s)", file_path, payload.upload_id)
+
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Erro ao exportar PDF: {str(e)}")
+        print(f"[export-pdf] Erro: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao gerar PDF: {str(e)}",
         )
 
 # ============== SERVE FRONTEND INDEX (SPA FALLBACK) ==============

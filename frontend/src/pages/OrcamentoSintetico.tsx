@@ -1,14 +1,13 @@
 import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Download, FileSpreadsheet, LayoutList, Loader2 } from "lucide-react";
-import { toast } from "sonner";
 import {
   filtrarLinhasSintetico,
   calcularResumoSintetico,
 } from "../features/orcamentos/orcamentoSintetico";
 import { useOrcamentoLinhasLoader } from "../features/orcamentos/useOrcamentoLinhasLoader";
-import { exportOrcamentoExcel } from "../features/orcamentos/exportOrcamento";
-import { SINTETICO_ONLY, FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
+import { FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
+import ExportModal from "../components/ExportModal";
 import { btnAccent, btnMuted } from "../components/ui/buttonClasses";
 
 const formatMoney = (value: number) =>
@@ -17,55 +16,10 @@ const formatMoney = (value: number) =>
 const OrcamentoSintetico: React.FC = () => {
   const navigate = useNavigate();
   const { status, linhas, uploadId, nomeProjeto } = useOrcamentoLinhasLoader();
-  const [isExporting, setIsExporting] = useState(false);
-  const [isExportingFull, setIsExportingFull] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   const linhasSintetico = useMemo(() => filtrarLinhasSintetico(linhas), [linhas]);
   const resumo = useMemo(() => calcularResumoSintetico(linhasSintetico), [linhasSintetico]);
-
-  const handleExport = async () => {
-    if (linhas.length === 0) {
-      toast.warning("Nada para exportar");
-      return;
-    }
-
-    setIsExporting(true);
-    try {
-      await exportOrcamentoExcel({
-        linhas,
-        modelosSelecionados: SINTETICO_ONLY,
-        nomeProjeto,
-      });
-      toast.success("Excel sintético exportado");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erro ao exportar";
-      toast.error("Falha na exportação", { description: msg });
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleExportFull = async () => {
-    if (linhas.length === 0) {
-      toast.warning("Nada para exportar");
-      return;
-    }
-
-    setIsExportingFull(true);
-    try {
-      await exportOrcamentoExcel({
-        linhas,
-        modelosSelecionados: FULL_ORCAMENTO_EXPORT,
-        nomeProjeto,
-      });
-      toast.success("Pacote completo exportado (Analítico + Sintético + ABC)");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erro ao exportar";
-      toast.error("Falha na exportação", { description: msg });
-    } finally {
-      setIsExportingFull(false);
-    }
-  };
 
   if (status === "loading") {
     return (
@@ -112,30 +66,11 @@ const OrcamentoSintetico: React.FC = () => {
           )}
           <button
             type="button"
-            className={btnMuted}
-            disabled={isExportingFull}
-            onClick={() => void handleExportFull()}
-            title="Analítico + Sintético + Curva ABC"
-          >
-            {isExportingFull ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <FileSpreadsheet className="mr-2 h-4 w-4" />
-            )}
-            Pacote completo
-          </button>
-          <button
-            type="button"
             className={btnAccent}
-            onClick={() => void handleExport()}
-            disabled={isExporting}
+            onClick={() => setExportModalOpen(true)}
           >
-            {isExporting ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Download className="mr-2 h-4 w-4" />
-            )}
-            Exportar Excel
+            <Download className="mr-2 h-4 w-4" />
+            Exportar
           </button>
         </div>
       </div>
@@ -193,6 +128,15 @@ const OrcamentoSintetico: React.FC = () => {
         <FileSpreadsheet className="h-4 w-4" />
         Valores consolidados a partir dos itens filhos de cada grupo no Orçamento Analítico.
       </p>
+
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        uploadId={uploadId}
+        nomeProjeto={nomeProjeto}
+        linhas={linhas}
+        defaultModelos={FULL_ORCAMENTO_EXPORT}
+      />
     </div>
   );
 };

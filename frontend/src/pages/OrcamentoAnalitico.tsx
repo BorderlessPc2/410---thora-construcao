@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   Download,
-  FileSpreadsheet,
   GitCompare,
   Layers,
   Loader2,
   Lock,
   Plus,
+  Calculator,
 } from "lucide-react";
 import { toast } from "sonner";
 import { getOrcamento, getOrcamentoFromFirebase } from "../services/api";
@@ -31,8 +31,8 @@ import {
   type AnaliticoEditableField,
 } from "../features/orcamentos/recalcularAnaliticoHierarquico";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
-import { ANALITICO_ONLY, FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
-import { exportOrcamentoExcel } from "../features/orcamentos/exportOrcamento";
+import { FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
+import ExportModal from "../components/ExportModal";
 import { useOrcamentoLinhasContext } from "../features/orcamentos/OrcamentoLinhasContext";
 import { btnAccent, btnMuted } from "../components/ui/buttonClasses";
 import { useAuth } from "../features/auth/AuthContext";
@@ -70,12 +70,16 @@ const OrcamentoAnalitico: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const flowState = location.state as NovoOrcamentoFlowState | null;
+  const bdiAppliedState = location.state as {
+    bdiApplied?: boolean;
+    bdiPercentual?: number;
+    valorComBDI?: number;
+  } | null;
 
   const [viewMode, setViewMode] = useState<ViewMode>("loading");
   const [linhas, setLinhas] = useState<LinhaAnalitica[]>([]);
   const [currentUploadId, setCurrentUploadId] = useState<string | null>(uploadIdParam ?? null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [isExportingFull, setIsExportingFull] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
   const [nomeProjeto, setNomeProjeto] = useState<string>(
     flowState?.nomeProjeto ?? "Orçamento",
   );
@@ -288,50 +292,6 @@ const OrcamentoAnalitico: React.FC = () => {
     [currentUploadId, currentUserName],
   );
 
-  const handleExport = async () => {
-    if (linhas.length === 0) {
-      toast.warning("Nada para exportar");
-      return;
-    }
-
-    setIsExporting(true);
-    try {
-      await exportOrcamentoExcel({
-        linhas,
-        modelosSelecionados: ANALITICO_ONLY,
-        nomeProjeto,
-      });
-      toast.success("Excel analítico exportado");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erro ao exportar";
-      toast.error("Falha na exportação", { description: msg });
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const handleExportFull = async () => {
-    if (linhas.length === 0) {
-      toast.warning("Nada para exportar");
-      return;
-    }
-
-    setIsExportingFull(true);
-    try {
-      await exportOrcamentoExcel({
-        linhas,
-        modelosSelecionados: FULL_ORCAMENTO_EXPORT,
-        nomeProjeto,
-      });
-      toast.success("Pacote completo exportado (Analítico + Sintético + ABC)");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Erro ao exportar";
-      toast.error("Falha na exportação", { description: msg });
-    } finally {
-      setIsExportingFull(false);
-    }
-  };
-
   if (viewMode === "loading") {
     return (
       <div className="flex min-h-full flex-col items-center justify-center bg-slate-50 py-24">
@@ -398,31 +358,23 @@ const OrcamentoAnalitico: React.FC = () => {
             </button>
             <button
               type="button"
-              disabled={linhas.length === 0 || isExportingFull}
-              onClick={() => void handleExportFull()}
-              className={btnMuted}
-              title="Analítico + Sintético + Curva ABC"
-            >
-              {isExportingFull ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <FileSpreadsheet className="h-4 w-4" />
-              )}
-              {isExportingFull ? "Exportando…" : "Pacote completo"}
-            </button>
-            <button
-              type="button"
-              disabled={linhas.length === 0 || isExporting}
-              onClick={() => void handleExport()}
+              disabled={linhas.length === 0}
+              onClick={() => setExportModalOpen(true)}
               className={btnAccent}
             >
-              {isExporting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Download className="h-4 w-4" />
-              )}
-              {isExporting ? "Exportando…" : "Exportar Excel"}
+              <Download className="h-4 w-4" />
+              Exportar
             </button>
+            {currentUploadId && (
+              <button
+                type="button"
+                className={btnMuted}
+                onClick={() => navigate(`/bdi/${currentUploadId}`)}
+              >
+                <Calculator className="h-4 w-4" />
+                Calcular BDI
+              </button>
+            )}
           </div>
         </div>
 
@@ -435,6 +387,19 @@ const OrcamentoAnalitico: React.FC = () => {
       </header>
 
       <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6 sm:px-6">
+        {bdiAppliedState?.bdiApplied && (
+          <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            BDI de{" "}
+            {(bdiAppliedState.bdiPercentual ?? 0).toLocaleString("pt-BR", {
+              minimumFractionDigits: 2,
+            })}
+            % aplicado — Total atualizado:{" "}
+            {(bdiAppliedState.valorComBDI ?? 0).toLocaleString("pt-BR", {
+              style: "currency",
+              currency: "BRL",
+            })}
+          </div>
+        )}
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-5">
           <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-xs font-medium uppercase text-slate-500">Grupos</p>
@@ -624,6 +589,15 @@ const OrcamentoAnalitico: React.FC = () => {
           onClose={() => setShowRevisoes(false)}
         />
       ) : null}
+
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        uploadId={currentUploadId ?? undefined}
+        nomeProjeto={nomeProjeto}
+        linhas={linhas}
+        defaultModelos={FULL_ORCAMENTO_EXPORT}
+      />
     </div>
   );
 };
