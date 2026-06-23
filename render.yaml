@@ -21,5 +21,9 @@ services:
         value: https://borderless-410-thora.netlify.app,https://borderles-410.netlify.app,https://410-thora.netlify.app
       - key: RENDER
         value: "true"
-      # Defina no painel do Render (Environment → Secret Files / env vars):
-      # FIREBASE_CREDENTIALS, GEMINI_API_KEY, OPENAI_API_KEY (opcional)
+      # Obrigatório para extração com IA (defina o valor no painel Render → Environment):
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      # FIREBASE_CREDENTIALS (JSON da service account) — também via Environment / Secret File

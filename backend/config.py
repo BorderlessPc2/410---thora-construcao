@@ -77,12 +77,75 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-# Fluxo Orçamento Analítico (GPT-4o) — chave sempre via .env (nunca no código)
+# Fluxo Orçamento Analítico (GPT-4o) — chave via variável de ambiente (Render / .env local)
 OPENAI_ORCAMENTO_MODEL = os.getenv("OPENAI_ORCAMENTO_MODEL", "gpt-4o")
 _default_orcamento_timeout = "55" if IS_VERCEL else "120"
 OPENAI_ORCAMENTO_TIMEOUT_SECONDS = float(
     os.getenv("OPENAI_ORCAMENTO_TIMEOUT", _default_orcamento_timeout)
 )
+
+_PLACEHOLDER_API_KEYS = frozenset(
+    {
+        "",
+        "sua-chave-aqui",
+        "sua-chave",
+        "your-key-here",
+        "changeme",
+        "...",
+    }
+)
+
+
+def _is_valid_env_key(key: str | None) -> bool:
+    normalized = (key or "").strip().lower()
+    return bool(normalized) and normalized not in _PLACEHOLDER_API_KEYS
+
+
+def get_openai_api_key() -> str:
+    """Lê OPENAI_API_KEY em runtime (Render injeta via Environment, não usa .env)."""
+    return (os.getenv("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip()
+
+
+def get_gemini_api_key() -> str:
+    """Lê GEMINI_API_KEY em runtime."""
+    return (os.getenv("GEMINI_API_KEY") or GEMINI_API_KEY or "").strip()
+
+
+def is_openai_configured() -> bool:
+    return _is_valid_env_key(get_openai_api_key())
+
+
+def is_gemini_configured() -> bool:
+    return _is_valid_env_key(get_gemini_api_key())
+
+
+def resolve_ai_extraction_provider() -> str | None:
+    if is_openai_configured():
+        return "openai"
+    if is_gemini_configured():
+        return "gemini"
+    return None
+
+
+def ai_keys_status() -> dict[str, object]:
+    provider = resolve_ai_extraction_provider()
+    configured = provider is not None
+    hint = None
+    if not configured:
+        if IS_RENDER:
+            hint = (
+                "Configure OPENAI_API_KEY ou GEMINI_API_KEY em "
+                "Render → four10-thora-construcao → Environment → Save → Manual Deploy."
+            )
+        else:
+            hint = "Defina OPENAI_API_KEY ou GEMINI_API_KEY no .env (raiz ou backend/)."
+    return {
+        "openai_configured": is_openai_configured(),
+        "gemini_configured": is_gemini_configured(),
+        "extraction_provider": provider,
+        "configured": configured,
+        "hint": hint,
+    }
 
 # AI local provider (Ollama)
 _default_ollama_enabled = "false" if IS_VERCEL else "true"
@@ -140,12 +203,12 @@ USE_CELERY_QUEUE = os.getenv("USE_CELERY_QUEUE", _default_use_celery).lower() in
     "on",
 ) and bool(CELERY_BROKER_URL) and not IS_VERCEL
 
-if GEMINI_API_KEY and GEMINI_API_KEY.strip().lower() not in {"", "sua-chave-aqui", "sua-chave", "..."}:
+if is_gemini_configured():
     print("GEMINI_API_KEY carregada")
 else:
-    print("AVISO: GEMINI_API_KEY não encontrada ou inválida no .env")
+    print("AVISO: GEMINI_API_KEY não encontrada ou inválida")
 
-if OPENAI_API_KEY and OPENAI_API_KEY.strip().lower() not in {"", "sua-chave-aqui", "..."}:
+if is_openai_configured():
     print("OPENAI_API_KEY carregada")
-elif not GEMINI_API_KEY or GEMINI_API_KEY.strip().lower() in {"", "sua-chave-aqui", "sua-chave", "..."}:
-    print("AVISO: configure OPENAI_API_KEY ou GEMINI_API_KEY no .env para extração de PDF com IA")
+elif not is_gemini_configured():
+    print("AVISO: configure OPENAI_API_KEY ou GEMINI_API_KEY no ambiente (Render ou .env local)")

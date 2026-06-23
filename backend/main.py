@@ -51,6 +51,7 @@ from config import (
     OLLAMA_TIMEOUT_SECONDS,
     AI_PROVIDER_TIMEOUT_SECONDS,
     ENABLE_MULTI_PROVIDER_CHAIN,
+    ai_keys_status,
 )
 from firebase_service import OrcamentoFirestore, OrcamentoEnterpriseFirestore
 from budget_parser import BudgetParser
@@ -1623,6 +1624,7 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "version": API_VERSION,
         "environment": ENVIRONMENT,
+        "ai": ai_keys_status(),
     }
 
 # ============== TEST ==============

@@ -26,6 +26,12 @@ from config import (
     OPENAI_MODEL,
     OPENAI_ORCAMENTO_MODEL,
     OPENAI_ORCAMENTO_TIMEOUT_SECONDS,
+    ai_keys_status,
+    get_gemini_api_key,
+    get_openai_api_key,
+    is_gemini_configured,
+    is_openai_configured,
+    resolve_ai_extraction_provider,
 )
 
 from .ai_audit_logger import log_ai_exchange, truncate_rows_for_audit
@@ -265,20 +271,25 @@ def _is_valid_api_key(key: str | None) -> bool:
 
 
 def _has_openai_key() -> bool:
-    return _is_valid_api_key(OPENAI_API_KEY)
+    return is_openai_configured()
 
 
 def _has_gemini_key() -> bool:
-    return _is_valid_api_key(GEMINI_API_KEY)
+    return is_gemini_configured()
+
+
+def _missing_ai_key_message() -> str:
+    status = ai_keys_status()
+    hint = status.get("hint") or "Configure OPENAI_API_KEY ou GEMINI_API_KEY."
+    return f"Nenhuma chave de IA configurada no servidor. {hint}"
 
 
 def _resolve_extraction_provider() -> str:
-    if _has_openai_key():
-        return "openai"
-    if _has_gemini_key():
-        return "gemini"
+    provider = resolve_ai_extraction_provider()
+    if provider:
+        return provider
     raise OpenAIServiceError(
-        "Nenhuma chave de IA configurada. Defina OPENAI_API_KEY ou GEMINI_API_KEY no arquivo .env na raiz do projeto.",
+        _missing_ai_key_message(),
         status_code=503,
         code="missing_api_key",
     )
@@ -334,7 +345,7 @@ async def _call_gemini_json(
             attempted_models.append(model)
             url = (
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-                f"?key={GEMINI_API_KEY.strip()}"
+                f"?key={get_gemini_api_key()}"
             )
             try:
                 response = await client.post(url, json=request_body)
@@ -388,7 +399,7 @@ async def _call_gemini_json(
 
 def _get_client() -> AsyncOpenAI:
     return AsyncOpenAI(
-        api_key=OPENAI_API_KEY.strip(),
+        api_key=get_openai_api_key(),
         timeout=OPENAI_ORCAMENTO_TIMEOUT_SECONDS,
     )
 
@@ -1795,9 +1806,9 @@ async def generate_report_chat(
     conversation: [{"role": "user"|"assistant", "content": "..."}]
     budget_context: orçamento completo + metadados
     """
-    if not OPENAI_API_KEY:
+    if not is_openai_configured():
         raise OpenAIServiceError(
-            "OPENAI_API_KEY não configurada.",
+            _missing_ai_key_message(),
             status_code=503,
             code="missing_api_key",
         )
@@ -1830,7 +1841,7 @@ async def generate_report_chat(
     if not any(m["role"] == "user" for m in api_messages):
         raise OpenAIServiceError("Nenhuma mensagem do usuário na conversa.", status_code=400)
 
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY, timeout=OPENAI_ORCAMENTO_TIMEOUT_SECONDS)
+    client = AsyncOpenAI(api_key=get_openai_api_key(), timeout=OPENAI_ORCAMENTO_TIMEOUT_SECONDS)
     t0 = time.perf_counter()
     input_audit = {
         "messages_count": len(api_messages),
