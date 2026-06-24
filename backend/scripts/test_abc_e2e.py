@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 
 PDF_PATH = Path(r"c:\Users\frank\Downloads\3 Orçamento SEM Desoneração.pdf")
-BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "https://four10-thora-construcao.onrender.com"
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "https://four10-thora-construcao-262l.onrender.com"
 USER_ID = f"test-e2e-{uuid.uuid4().hex[:10]}"
 HEADERS = {"X-Anonymous-User": USER_ID}
 DETECT_TIMEOUT = 600

@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 env:
-  DEFAULT_RENDER_HEALTH_URL: https://four10-thora-construcao.onrender.com/health
+  DEFAULT_RENDER_HEALTH_URL: https://four10-thora-construcao-262l.onrender.com/health
 
 jobs:
   ping:

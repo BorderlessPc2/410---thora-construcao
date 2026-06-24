@@ -179,7 +179,7 @@ def ai_keys_status() -> dict[str, object]:
         if IS_RENDER:
             hint = (
                 "Configure OPENAI_API_KEY ou GEMINI_API_KEY em "
-                "Render → four10-thora-construcao → Environment → Save → Manual Deploy."
+                "Render → four10-thora-construcao-262l → Environment → Save → Manual Deploy."
             )
         else:
             hint = "Defina OPENAI_API_KEY ou GEMINI_API_KEY no .env (raiz ou backend/)."
@@ -196,6 +196,7 @@ def ai_keys_status() -> dict[str, object]:
         status["diagnostics"] = {
             "is_render": IS_RENDER,
             "render_service": os.getenv("RENDER_SERVICE_NAME", ""),
+            "render_external_url": os.getenv("RENDER_EXTERNAL_URL", ""),
             "environment_var": os.getenv("ENVIRONMENT", ""),
             "frontend_url_set": bool(os.getenv("FRONTEND_URL")),
             "openai_env_var_length": len(os.getenv("OPENAI_API_KEY") or ""),
