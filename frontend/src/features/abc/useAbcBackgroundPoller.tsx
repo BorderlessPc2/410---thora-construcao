@@ -79,7 +79,7 @@ function handleTerminalJob(job: AbcAnalysisJob, navigate: ReturnType<typeof useN
         ? `${job.items_found} item(ns) salvos`
         : "PDF e itens salvos";
     toast.success(`Análise concluída: ${job.filename}`, {
-      description: `Na Lista de análises — ${itemsLabel}.`,
+      description: `${itemsLabel}. Abra a validação para revisar os dados.`,
       duration: 12000,
       action: {
         label: "Abrir validação",
@@ -90,11 +90,11 @@ function handleTerminalJob(job: AbcAnalysisJob, navigate: ReturnType<typeof useN
   }
 
   toast.error(`Falha na análise: ${job.filename}`, {
-    description: job.error || job.message || "Tente novamente na Lista de análises.",
+    description: job.error || job.message || "Tente enviar o PDF novamente.",
     duration: 10000,
     action: {
-      label: "Ver fila",
-      onClick: () => navigate("/lista-analises"),
+      label: "Nova análise",
+      onClick: () => navigate("/orcamento"),
     },
   });
 }

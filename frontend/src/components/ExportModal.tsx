@@ -17,7 +17,7 @@ import {
 } from "../features/orcamentos/exportOrcamento";
 import type { LinhaAnalitica } from "../features/orcamentos/orcamentoAnalitico";
 import type { OutputModelsSelection } from "../features/orcamentos/outputModels";
-import { FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
+import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
 import {
   exportToPDF,
   LIVRE_EXPORT_COLUMNS,
@@ -46,7 +46,7 @@ const ExportModal: React.FC<ExportModalProps> = ({
   linhas,
   hierarchicalItems,
   flatItems,
-  defaultModelos = FULL_ORCAMENTO_EXPORT,
+  defaultModelos = CURVA_ABC_ONLY,
 }) => {
   const { user } = useAuth();
   const [tab, setTab] = useState<TabId>("excel");

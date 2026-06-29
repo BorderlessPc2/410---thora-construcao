@@ -634,7 +634,51 @@ export const processAnaliticoFullBatch = async (
   }
 };
 
-/** Processa as tabelas escolhidas (GPT-4o quando configurado no backend). */
+/** Processa tabelas escolhidas com parser local (sem IA). */
+export const processOrcamentoTables = async (
+  uploadId: string,
+  tableIds: string[],
+  analysisTypes: string[] = ["curva_abc"],
+) => {
+  try {
+    const response = await apiClient.post(
+      "/api/orcamentos/process-tables",
+      {
+        upload_id: uploadId,
+        table_ids: tableIds,
+        analysis_types: analysisTypes,
+      },
+      { timeout: 120000 },
+    );
+    return response.data as {
+      status: string;
+      upload_id: string;
+      filename: string;
+      tables_found: number;
+      items_found: number;
+      analysis_types: string[];
+      engine: string;
+      tables: unknown[];
+      items: unknown[];
+      structured_items?: unknown[];
+      hierarchical_items?: unknown[];
+      resumo: Record<string, unknown>;
+      message: string;
+    };
+  } catch (error: unknown) {
+    const err = error as { response?: { data?: { detail?: unknown } } };
+    const detail = err.response?.data?.detail;
+    const msg =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
+          : "Erro ao processar tabelas";
+    throw new Error(msg);
+  }
+};
+
+/** @deprecated Prefer processOrcamentoTables — mantido para compatibilidade. */
 export const processOrcamentoConfirmed = async (uploadId: string, tableIds: string | string[]) => {
   try {
     const payload = Array.isArray(tableIds) 

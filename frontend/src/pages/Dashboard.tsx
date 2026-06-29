@@ -132,10 +132,10 @@ const Dashboard: React.FC = () => {
             </button>
             <button
               type="button"
-              onClick={() => navigate("/orcamento")}
+              onClick={() => navigate("/analise-orcamento")}
               className={btnPrimary}
             >
-              Novo Orçamento
+              Nova análise
             </button>
           </div>
         </div>
@@ -207,10 +207,10 @@ const Dashboard: React.FC = () => {
             </h2>
             <button
               type="button"
-              onClick={() => navigate("/relatorios")}
+              onClick={() => navigate("/analise-orcamento")}
               className={`${btnPrimary} w-full sm:w-auto`}
             >
-              Relatórios com IA
+              Nova análise ABC
             </button>
           </div>
 
@@ -252,9 +252,9 @@ const Dashboard: React.FC = () => {
                       <button
                         type="button"
                         className="font-medium text-blue-600 underline-offset-2 hover:underline"
-                        onClick={() => navigate("/orcamento")}
+                        onClick={() => navigate("/analise-orcamento")}
                       >
-                        Novo Orçamento
+                        Nova análise
                       </button>{" "}
                       para começar.
                     </td>
@@ -316,13 +316,9 @@ const Dashboard: React.FC = () => {
                               <button
                                 type="button"
                                 className="text-xs font-medium text-violet-600 hover:underline"
-                                onClick={() =>
-                                  navigate("/relatorios", {
-                                    state: { uploadId: o.uploadId },
-                                  })
-                                }
+                                onClick={() => navigate(`/curva-abc/${o.uploadId}`)}
                               >
-                                Relatório
+                                Curva ABC
                               </button>
                             </div>
                           )}

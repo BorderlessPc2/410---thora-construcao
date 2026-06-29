@@ -13,10 +13,7 @@ import {
   Loader2,
   Download,
   Trash2,
-  LayoutList,
-  FileSpreadsheet,
   TrendingUp,
-  Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -35,28 +32,21 @@ import {
   parseEditableNumber,
   unitPriceSemBdiFromComBdi,
   resolveStructuredItemPricing,
+  sanitizeBdiPercent,
   isExecutiveItem,
-} from "../features/orcamentos/recalcularCurvaABC";
-import {
-  listCatalogoByUserId,
-} from "../features/catalogo/catalogoRepository";
-import type { CatalogoProduto } from "../features/catalogo/catalogoTypes";
-import {
-  aplicarProdutoCatalogo,
-  calcularEconomia,
-  normalizeCatalogCode,
   snapshotReferenciaOrcamento,
-} from "../features/catalogo/catalogoUtils";
+  calcularEconomia,
+} from "../features/orcamentos/recalcularCurvaABC";
 import type { NovoOrcamentoFlowState } from "../features/orcamentos/outputModels";
-import { CURVA_ABC_ONLY, FULL_ORCAMENTO_EXPORT } from "../features/orcamentos/outputModels";
+import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
 import { exportOrcamentoExcel } from "../features/orcamentos/exportOrcamento";
 import { mapRawListToLinhasAnaliticas } from "../features/orcamentos/orcamentoAnalitico";
 import { recalcularGruposAnalitico } from "../features/orcamentos/recalcularAnaliticoHierarquico";
 import { useOrcamentoLinhasContext } from "../features/orcamentos/OrcamentoLinhasContext";
 import { WizardStepper } from "../components/WizardStepper";
 import {
-  ANALISE_ABC_VALIDATION_STEP,
-  ANALISE_ABC_WIZARD_STEPS,
+  ANALISE_ORCAMENTO_VALIDATION_STEP,
+  ANALISE_ORCAMENTO_WIZARD_STEPS,
 } from "../features/orcamentos/novoOrcamentoWizard";
 import {
   analisarOrcamentoFromItens,
@@ -130,10 +120,10 @@ const toNumber = (value: unknown): number => {
 };
 
 const toBdiPercent = (value: unknown): number => {
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return sanitizeBdiPercent(value);
   if (typeof value !== "string") return 0;
   const compact = value.replace("%", "").replace(/\s/g, "");
-  return toNumber(compact);
+  return sanitizeBdiPercent(toNumber(compact));
 };
 
 const mapStructuredItemsToValidation = (
@@ -145,25 +135,30 @@ const mapStructuredItemsToValidation = (
   for (const item of items) {
     const tipo = String(item.tipo ?? "item").toLowerCase();
     const description = String(item.descricao ?? item.Descrição ?? "").trim();
-    const code = String(item.codigo ?? item.Código ?? "").trim();
+    const itemNumero = String(item.item ?? item.item_numero ?? "").trim();
+    const codigoCatalogo = String(item.codigo ?? item.Código ?? "").trim();
     if (tipo === "grupo" || description.toLowerCase().includes("total do grupo")) {
       continue;
     }
 
     const { qty, bdi, unitPrice } = resolveStructuredItemPricing(item);
+    const valorTotalPdf = toNumber(item.valor_total ?? item.Total);
 
     mapped.push({
       id: ++id,
-      item: String(item.item ?? ""),
+      item: itemNumero,
       tipo: String(item.tipo ?? "item"),
       banco: String(item.banco ?? ""),
-      code: code || String(id).padStart(3, "0"),
+      code: itemNumero || codigoCatalogo || String(id).padStart(3, "0"),
+      catalogCode: codigoCatalogo || undefined,
       description,
       bdi,
       unit: String(item.unidade ?? item.Unidade ?? "un").trim() || "un",
       qty,
       unitPrice,
-      lineTotal: 0,
+      lineTotal: valorTotalPdf > 0 ? valorTotalPdf : 0,
+      referenceUnitPrice: unitPrice > 0 ? unitPrice : undefined,
+      referenceLineTotal: valorTotalPdf > 0 ? valorTotalPdf : undefined,
       selected: false,
       extractionConfidence:
         typeof item.confianca === "number" ? item.confianca : undefined,
@@ -201,29 +196,40 @@ const mapStoredItemsToValidation = (rawItems: unknown[]): ItemOrcamento[] => {
       item.unitPrice !== undefined && Number(item.unitPrice) > 0
         ? toNumber(item.unitPrice)
         : pricing.unitPrice;
+    const storedLineTotal = toNumber(
+      item.lineTotal ?? item.valor_total ?? item.totalValue,
+    );
 
     mapped.push({
       id: ++id,
-      item: String(item.item ?? ""),
+      item: String(item.item ?? item.item_numero ?? ""),
       tipo: String(item.tipo ?? "item"),
       banco: String(item.banco ?? ""),
-      code: String(item.codigo ?? item.code ?? id).trim() || String(id).padStart(3, "0"),
+      code:
+        String(item.item ?? item.item_numero ?? item.codigo ?? item.code ?? id).trim() ||
+        String(id).padStart(3, "0"),
       catalogCode:
-        typeof item.catalogCode === "string" ? item.catalogCode : undefined,
+        typeof item.catalogCode === "string"
+          ? item.catalogCode
+          : String(item.codigo ?? "").trim() || undefined,
       description,
       bdi,
       unit: String(item.unidade ?? item.unit ?? "un").trim() || "un",
       qty: pricing.qty || qty,
       unitPrice: unitFromStore,
-      lineTotal: 0,
+      lineTotal: storedLineTotal > 0 ? storedLineTotal : 0,
       referenceUnitPrice:
         typeof item.referenceUnitPrice === "number"
           ? item.referenceUnitPrice
-          : undefined,
+          : unitFromStore > 0
+            ? unitFromStore
+            : undefined,
       referenceLineTotal:
         typeof item.referenceLineTotal === "number"
           ? item.referenceLineTotal
-          : undefined,
+          : storedLineTotal > 0
+            ? storedLineTotal
+            : undefined,
       selected: false,
       classification: item.classification as "A" | "B" | "C" | undefined,
       individual_percentage:
@@ -271,8 +277,7 @@ export default function ValidacaoOrcamento() {
   const { user } = useAuth();
   const { setOrcamentoLinhas } = useOrcamentoLinhasContext();
 
-  const fromListaAnalises = Boolean(flowState?.fromListaAnalises);
-  const isReopenedAnalysis = fromListaAnalises || (!flowState?.file && Boolean(uploadIdFromRoute));
+  const isReopenedAnalysis = !flowState?.file && Boolean(uploadIdFromRoute);
 
   const resolvedUploadId =
     (flowState?.uploadId as string | undefined) ?? uploadIdFromRoute;
@@ -283,11 +288,9 @@ export default function ValidacaoOrcamento() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
-  const [isExportingFull, setIsExportingFull] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [deleteItemId, setDeleteItemId] = useState<number | null>(null);
   const [selectAll, setSelectAll] = useState(false);
-  const [catalogo, setCatalogo] = useState<CatalogoProduto[]>([]);
 
   const abcResumo = useMemo(() => calcularResumoAbc(items), [items]);
 
@@ -299,7 +302,7 @@ export default function ValidacaoOrcamento() {
       item_numero: item.item,
       tipo: item.tipo,
       banco: item.banco,
-      codigo: item.code,
+      codigo: item.catalogCode ?? item.code,
       descricao: item.description,
       unidade: item.unit,
       quantidade: item.qty,
@@ -332,25 +335,8 @@ export default function ValidacaoOrcamento() {
     return executive.every((item) => item.unitPrice <= 0 && item.lineTotal <= 0);
   }, [items]);
 
-  const catalogMap = useMemo(() => {
-    const map = new Map<string, CatalogoProduto>();
-    for (const p of catalogo) {
-      map.set(normalizeCatalogCode(p.catalogCode), p);
-    }
-    return map;
-  }, [catalogo]);
-
   const applyAbcToItems = (raw: ItemOrcamento[]) =>
     recalcularCurvaABC(raw.map(snapshotReferenciaOrcamento));
-
-  useEffect(() => {
-    if (!user?.uid) return;
-    void listCatalogoByUserId(user.uid)
-      .then(setCatalogo)
-      .catch(() => {
-        /* catálogo opcional na validação */
-      });
-  }, [user?.uid]);
 
   // States do PDF Viewer
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -395,7 +381,7 @@ export default function ValidacaoOrcamento() {
 
   useEffect(() => {
     if (!uploadIdFromRoute && !flowState?.structuredData && !flowState?.extractedData) {
-      navigate("/orcamento", { replace: true });
+      navigate("/analise-orcamento", { replace: true });
       return;
     }
 
@@ -695,31 +681,6 @@ export default function ValidacaoOrcamento() {
     });
   };
 
-  const handleCatalogCodeCommit = (itemId: number, rawCode: string) => {
-    const key = normalizeCatalogCode(rawCode);
-    if (!key) return;
-
-    const produto = catalogMap.get(key);
-    if (!produto) {
-      toast.warning("Código não encontrado no catálogo", {
-        description: "Cadastre em Meu Catálogo ou verifique o código.",
-      });
-      return;
-    }
-
-    setItems((prev) => {
-      const updated = prev.map((item) => {
-        if (item.id !== itemId) return item;
-        return aplicarProdutoCatalogo(item, produto);
-      });
-      return recalcularCurvaABC(updated);
-    });
-
-    toast.success("Preço do catálogo aplicado", {
-      description: produto.description,
-    });
-  };
-
   const confirmRemoveItem = () => {
     if (deleteItemId == null) return;
     setItems((prev) => recalcularCurvaABC(prev.filter((item) => item.id !== deleteItemId)));
@@ -778,11 +739,10 @@ export default function ValidacaoOrcamento() {
       items: buildItemExportPayload(items),
       hierarchicalItems,
     },
-    fromListaAnalises,
   });
 
   const handleBack = () => {
-    navigate(fromListaAnalises ? "/lista-analises" : "/orcamento");
+    navigate("/analise-orcamento");
   };
 
   const handleOpenCurvaAbc = () => {
@@ -800,26 +760,6 @@ export default function ValidacaoOrcamento() {
         ...buildChildRouteState(),
         editedItems: buildItemExportPayload(payload),
         items: buildItemExportPayload(payload),
-      },
-    });
-  };
-
-  const handleOpenSintetico = () => {
-    const id = resolvedUploadId || "unknown";
-    navigate(`/orcamento-sintetico/${id}`, {
-      state: {
-        ...buildChildRouteState(),
-        items: buildItemExportPayload(items),
-      },
-    });
-  };
-
-  const handleOpenAnalitico = () => {
-    const id = resolvedUploadId || "unknown";
-    navigate(`/orcamento-analitico/${id}`, {
-      state: {
-        ...buildChildRouteState(),
-        items: buildItemExportPayload(items),
       },
     });
   };
@@ -849,33 +789,6 @@ export default function ValidacaoOrcamento() {
       toast.error("Falha ao exportar", { description: msg });
     } finally {
       setIsExporting(false);
-    }
-  };
-
-  const handleExportFull = async () => {
-    if (hierarchicalItems.length === 0 && items.length === 0) {
-      toast.warning("Nada para exportar", {
-        description: "Processe um PDF com estrutura hierárquica ou itens na planilha.",
-      });
-      return;
-    }
-
-    setIsExportingFull(true);
-    try {
-      await exportOrcamentoExcel({
-        hierarchicalItems: hierarchicalItems.length > 0 ? hierarchicalItems : undefined,
-        flatItems: items,
-        modelosSelecionados: FULL_ORCAMENTO_EXPORT,
-        nomeProjeto: nomeProjetoExport,
-      });
-      toast.success("Pacote completo exportado", {
-        description: "Analítico + Sintético + Curva ABC.",
-      });
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "Erro desconhecido";
-      toast.error("Falha ao exportar pacote", { description: msg });
-    } finally {
-      setIsExportingFull(false);
     }
   };
 
@@ -972,8 +885,8 @@ export default function ValidacaoOrcamento() {
 
       <div className="shrink-0 border-b border-slate-200 bg-slate-50/90 px-4 py-4 sm:px-6">
         <WizardStepper
-          steps={ANALISE_ABC_WIZARD_STEPS}
-          currentStep={ANALISE_ABC_VALIDATION_STEP}
+          steps={ANALISE_ORCAMENTO_WIZARD_STEPS}
+          currentStep={ANALISE_ORCAMENTO_VALIDATION_STEP}
         />
       </div>
 
@@ -983,17 +896,17 @@ export default function ValidacaoOrcamento() {
             type="button"
             onClick={handleBack}
             className={iconButton}
-            aria-label={fromListaAnalises ? "Voltar à lista de análises" : "Voltar para nova análise"}
+            aria-label="Voltar para nova análise"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-bold leading-tight text-slate-900">
-              Validação — Curva ABC
+              Validação — Análise de Orçamento
             </h1>
             <p className="flex flex-wrap items-center gap-1 text-xs text-slate-500">
               <span className="rounded-md bg-violet-100 px-1.5 py-0.5 font-semibold text-violet-800">
-                Passo {ANALISE_ABC_VALIDATION_STEP}
+                Passo {ANALISE_ORCAMENTO_VALIDATION_STEP}
               </span>
               {isLoading
                 ? "Carregando…"
@@ -1009,28 +922,10 @@ export default function ValidacaoOrcamento() {
         <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
           <button
             type="button"
-            disabled={
-              isLoading ||
-              (hierarchicalItems.length === 0 && items.length === 0) ||
-              isExportingFull
-            }
-            className={`${btnMuted} shrink-0`}
-            onClick={() => void handleExportFull()}
-            title="Analítico + Sintético + Curva ABC"
-          >
-            {isExportingFull ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <FileSpreadsheet className="h-4 w-4" />
-            )}
-            {isExportingFull ? "Exportando…" : "Pacote completo"}
-          </button>
-          <button
-            type="button"
             disabled={isLoading || items.length === 0 || isExporting}
             className={`${btnMuted} shrink-0`}
             onClick={() => void handleExport()}
-            title="Exportar apenas Curva ABC"
+            title="Exportar Curva ABC"
           >
             <Download className="h-4 w-4" />
             {isExporting ? "Exportando…" : "Exportar ABC"}
@@ -1048,26 +943,6 @@ export default function ValidacaoOrcamento() {
           <button
             type="button"
             disabled={isLoading || items.length === 0}
-            className={`${btnMuted} shrink-0`}
-            onClick={handleOpenAnalitico}
-            title="Planilha analítica hierárquica"
-          >
-            <Layers className="h-4 w-4" />
-            Analítico
-          </button>
-          <button
-            type="button"
-            disabled={isLoading || items.length === 0}
-            className={`${btnMuted} shrink-0`}
-            onClick={handleOpenSintetico}
-            title="Ver resumo gerencial por grupos"
-          >
-            <LayoutList className="h-4 w-4" />
-            Orçamento Sintético
-          </button>
-          <button
-            type="button"
-            disabled={isLoading || items.length === 0}
             className={`${btnAccent} shrink-0`}
             onClick={handleOpenCurvaAbc}
             title="Abrir gráfico e classificação ABC de todos os itens"
@@ -1081,17 +956,9 @@ export default function ValidacaoOrcamento() {
       {isReopenedAnalysis && !isLoading && !loadError && items.length > 0 ? (
         <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Produtos desta análise
+            Continuar análise
           </p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" className={btnMuted} onClick={handleOpenAnalitico}>
-              <Layers className="h-4 w-4" />
-              Orçamento analítico
-            </button>
-            <button type="button" className={btnMuted} onClick={handleOpenSintetico}>
-              <LayoutList className="h-4 w-4" />
-              Orçamento sintético
-            </button>
             <button type="button" className={btnAccent} onClick={handleOpenCurvaAbc}>
               <TrendingUp className="h-4 w-4" />
               Curva ABC
@@ -1104,15 +971,6 @@ export default function ValidacaoOrcamento() {
             >
               <Download className="h-4 w-4" />
               Exportar ABC
-            </button>
-            <button
-              type="button"
-              className={btnMuted}
-              disabled={isExportingFull}
-              onClick={() => void handleExportFull()}
-            >
-              <FileSpreadsheet className="h-4 w-4" />
-              Pacote completo
             </button>
           </div>
         </div>
@@ -1332,13 +1190,12 @@ export default function ValidacaoOrcamento() {
                     R$ {formatMoney(economiaTotal)}
                   </p>
                   <p className="mt-1 text-xs text-violet-700">
-                    Informe o código do catálogo na tabela
+                    Diferença quando o preço revisado é menor que o edital
                   </p>
                 </div>
               </div>
               <p className="mt-3 text-xs text-slate-500">
-                Use a coluna <strong>Cód. catálogo</strong> para aplicar seu preço cadastrado.
-                A economia compara o total do edital com seu preço (quando menor).
+                A economia compara o total do edital com o valor revisado (quando menor).
               </p>
               <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -1356,8 +1213,7 @@ export default function ValidacaoOrcamento() {
                   <span>
                     Este edital traz a planilha com <strong>preços em branco</strong> (modelo de
                     proposta). Código, descrição, quantidade e BDI foram extraídos do PDF — informe
-                    os valores unitários manualmente ou aplique preços do seu catálogo pela coluna{" "}
-                    <strong>Cód. catálogo</strong>.
+                    os valores unitários manualmente na tabela.
                   </span>
                 </div>
               ) : null}
@@ -1402,7 +1258,7 @@ export default function ValidacaoOrcamento() {
                   </div>
                 </div>
               ) : (
-                <table className="min-w-[1320px] w-full border-collapse text-left text-sm">
+                <table className="min-w-[1200px] w-full border-collapse text-left text-sm">
                   <thead className="border-b border-slate-200">
                     <tr>
                       <th className="sticky top-0 z-20 w-10 bg-slate-50 px-2 py-3 shadow-[inset_0_-1px_0_#e2e8f0]">
@@ -1415,9 +1271,6 @@ export default function ValidacaoOrcamento() {
                       </th>
                       <th className="sticky top-0 z-20 min-w-[6.5rem] whitespace-nowrap bg-slate-50 px-3 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
                         Cód. ref.
-                      </th>
-                      <th className="sticky top-0 z-20 min-w-[7.5rem] whitespace-nowrap bg-slate-50 px-3 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
-                        Cód. catálogo
                       </th>
                       <th className="sticky top-0 z-20 min-w-[5rem] whitespace-nowrap bg-slate-50 px-3 py-3 text-xs font-semibold uppercase tracking-wider text-slate-500 shadow-[inset_0_-1px_0_#e2e8f0]">
                         Banco
@@ -1506,26 +1359,6 @@ export default function ValidacaoOrcamento() {
                                     : "text-slate-600"
                             }`}
                             placeholder="Ref. edital"
-                          />
-                        </td>
-                        <td className="min-w-[7.5rem] px-3 py-2 align-top">
-                          <input
-                            type="text"
-                            value={item.catalogCode ?? ""}
-                            onChange={(e) =>
-                              handleChange(item.id, "catalogCode", e.target.value)
-                            }
-                            onBlur={(e) =>
-                              handleCatalogCodeCommit(item.id, e.target.value)
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.currentTarget.blur();
-                              }
-                            }}
-                            className="w-full min-w-[6.5rem] rounded-md border border-violet-200 bg-violet-50/50 px-2 py-1 font-mono text-xs text-violet-900 focus:border-violet-400 focus:outline-none focus:ring-1 focus:ring-violet-300"
-                            placeholder="Seu código"
-                            title="Código do seu catálogo — Enter ou sair do campo para aplicar preço"
                           />
                         </td>
                         <td className="min-w-[5rem] px-3 py-2 align-top">

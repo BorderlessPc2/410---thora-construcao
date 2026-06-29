@@ -1,5 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import React, { useCallback, useRef, useState } from "react";
 import { useDropzone, type DropzoneOptions } from "react-dropzone";
 import { AlertCircle, FileText, Loader2, UploadCloud, X } from "lucide-react";
 import { toast } from "sonner";
@@ -11,19 +10,14 @@ import {
   detectOrcamentoTables,
   processAnaliticoFullBatch,
   processAnaliticoFullPdf,
+  processOrcamentoTables,
   resolveOrcamentoProcessResult,
   uploadPDF,
   type AnaliticoBatchJobStatus,
   type AnaliticoFullPdfResult,
 } from "../../services/api";
-import {
-  enqueueAbcProcess,
-  getAbcBatchStatus,
-  registerAbcBatch,
-  updateAbcJob,
-} from "../../services/abcAnalysis";
-import { markAbcJobNotified, untrackAbcBackgroundJob } from "../../features/abc/abcBackgroundJobs";
-import { appendAbcAnalysisUploadId } from "../../features/abc/abcSession";
+import { AnalysisTypeSelector } from "./AnalysisTypeSelector";
+import type { AnalysisTypeId } from "../../features/orcamentos/analysisTypes";
 import {
   ProcessingQueuePanel,
   type ProcessingQueueItem,
@@ -45,6 +39,7 @@ export type OrcamentoWizardResult = {
   structuredItems: unknown[];
   resumo: unknown;
   iaMetadata: unknown;
+  analysisTypes: AnalysisTypeId[];
 };
 
 type FlowPhase =
@@ -52,6 +47,7 @@ type FlowPhase =
   | "uploading"
   | "detecting"
   | "selecting_table"
+  | "selecting_analysis"
   | "processing_ai";
 
 type WizardMode = "table_selection" | "full_pdf";
@@ -96,6 +92,7 @@ function getWizardStep(phase: FlowPhase, mode: WizardMode): number {
     case "detecting":
     case "selecting_table":
       return 2;
+    case "selecting_analysis":
     case "processing_ai":
       return 3;
     default:
@@ -167,6 +164,9 @@ export function OrcamentoPdfWizard({
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [tableOptions, setTableOptions] = useState<MockTableOption[]>([]);
   const [selectedTableIds, setSelectedTableIds] = useState<string[]>([]);
+  const [selectedAnalysisTypes, setSelectedAnalysisTypes] = useState<AnalysisTypeId[]>([
+    "curva_abc",
+  ]);
   const [errorMessage, setErrorMessage] = useState("");
   const [processingDetail, setProcessingDetail] = useState("");
   const [progressPercent, setProgressPercent] = useState(0);
@@ -177,7 +177,6 @@ export function OrcamentoPdfWizard({
   );
   const [selectedQueueId, setSelectedQueueId] = useState<string | null>(null);
   const autoOpenedRef = useRef<string | null>(null);
-  const processingTableIdsRef = useRef<string[]>([]);
   const processingPreviewsRef = useRef<OrcamentoWizardResult["selectedTablePreviews"]>([]);
 
   const resetFlow = useCallback(() => {
@@ -185,6 +184,7 @@ export function OrcamentoPdfWizard({
     setUploadId(null);
     setTableOptions([]);
     setSelectedTableIds([]);
+    setSelectedAnalysisTypes(["curva_abc"]);
     setErrorMessage("");
     setProcessingDetail("");
     setProgressPercent(0);
@@ -193,7 +193,6 @@ export function OrcamentoPdfWizard({
     setBatchResults(new Map());
     setSelectedQueueId(null);
     autoOpenedRef.current = null;
-    processingTableIdsRef.current = [];
     processingPreviewsRef.current = [];
     setPhase("pick_file");
   }, []);
@@ -207,6 +206,7 @@ export function OrcamentoPdfWizard({
       setUploadId(null);
       setTableOptions([]);
       setSelectedTableIds([]);
+    setSelectedAnalysisTypes(["curva_abc"]);
       setErrorMessage("");
       setProcessingDetail("");
       setProgressPercent(0);
@@ -278,89 +278,9 @@ export function OrcamentoPdfWizard({
       structuredItems,
       resumo: resolved.resumo,
       iaMetadata: resolved.ia_metadata,
+      analysisTypes: selectedAnalysisTypes,
     });
-  }, [onComplete]);
-
-  useEffect(() => {
-    if (isFullPdf || phase !== "processing_ai" || !uploadId || !file) {
-      return;
-    }
-
-    let cancelled = false;
-    let pollFailCount = 0;
-
-    const pollJob = async () => {
-      try {
-        const jobs = (await getAbcBatchStatus([uploadId])) ?? [];
-        if (cancelled) return;
-
-        pollFailCount = 0;
-        const job = jobs[0];
-
-        if (!job || job.status === "not_found") {
-          setProcessingDetail("Aguardando confirmação do servidor…");
-          return;
-        }
-
-        if (job.status === "queued" || job.status === "processing") {
-          const total = job.pages_total ?? job.table_ids?.length ?? 0;
-          const done = job.pages_done ?? 0;
-          if (total > 0) {
-            setProgressPercent(computeProgressPercent(done, total));
-          }
-          setProcessingDetail(
-            job.message ??
-              (total > 0
-                ? `IA analisando tabela ${Math.min(done + 1, total)} de ${total}…`
-                : job.queue_position
-                  ? `Na fila (posição ${job.queue_position})…`
-                  : "IA analisando tabelas…"),
-          );
-          return;
-        }
-
-        if (job.status === "awaiting_selection") {
-          setProcessingDetail("Aguardando início da fila de processamento…");
-          return;
-        }
-
-        if (job.status === "completed" && job.result) {
-          setProgressPercent(100);
-          markAbcJobNotified(uploadId);
-          setProcessingDetail("Análise concluída — abrindo validação…");
-          await finishWithResult(
-            uploadId,
-            job.result as Parameters<typeof finishWithResult>[1],
-            file,
-            processingTableIdsRef.current,
-            processingPreviewsRef.current,
-          );
-          return;
-        }
-
-        if (job.status === "failed") {
-          const msg = job.error || job.message || "Falha no processamento com IA";
-          setErrorMessage(msg);
-          setPhase("selecting_table");
-          toast.error("Falha ao processar", { description: msg });
-        }
-      } catch {
-        pollFailCount += 1;
-        if (pollFailCount >= 4) {
-          setProcessingDetail(
-            "Servidor instável — aguardando… (evite recarregar a página)",
-          );
-        }
-      }
-    };
-
-    void pollJob();
-    const timer = window.setInterval(() => void pollJob(), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [isFullPdf, phase, uploadId, file, finishWithResult]);
+  }, [onComplete, selectedAnalysisTypes]);
 
   const handleQueueSelect = async (item: ProcessingQueueItem) => {
     const result = batchResults.get(item.uploadId);
@@ -598,25 +518,26 @@ export function OrcamentoPdfWizard({
       const currentUploadId = uploadResponse.upload_id as string;
       setUploadId(currentUploadId);
 
-      await registerAbcBatch([{ uploadId: currentUploadId, filename: file.name }]);
-      appendAbcAnalysisUploadId(currentUploadId);
-      await updateAbcJob(currentUploadId, {
-        status: "detecting",
-        message: "Detectando tabelas no PDF…",
-      });
-
       setPhase("detecting");
       const detectResponse = await detectOrcamentoTables(currentUploadId);
       const mappedOptions = mapTableCandidates(detectResponse.options || []);
 
       setTableOptions(mappedOptions);
-      setSelectedTableIds([]);
+      const recommendedIds = (detectResponse.recommended_table_ids || []).filter((id) =>
+        mappedOptions.some((option) => option.id === id),
+      );
+      const likelyIds = mappedOptions
+        .filter((option) => option.is_budget_likely)
+        .map((option) => option.id);
+      const defaultSelected =
+        recommendedIds.length > 0
+          ? recommendedIds
+          : likelyIds.length > 0
+            ? likelyIds.slice(0, 5)
+            : mappedOptions.slice(0, 3).map((option) => option.id);
+      setSelectedTableIds(defaultSelected);
+      setSelectedAnalysisTypes(["curva_abc"]);
       if (mappedOptions.length === 0) {
-        await updateAbcJob(currentUploadId, {
-          status: "failed",
-          error: "Nenhuma tabela válida encontrada neste PDF.",
-          tables_found: 0,
-        });
         setPhase("pick_file");
         setErrorMessage(
           "Nenhuma tabela com dados suficientes foi encontrada. Verifique se o PDF contém planilha analítica.",
@@ -626,14 +547,12 @@ export function OrcamentoPdfWizard({
         });
         return;
       }
-      await updateAbcJob(currentUploadId, {
-        status: "awaiting_selection",
-        message: `${mappedOptions.length} tabela(s) encontrada(s) — selecione para analisar`,
-        tables_found: mappedOptions.length,
-      });
       setPhase("selecting_table");
       toast.success("Tabelas encontradas", {
-        description: "Selecione a tabela correta para continuar.",
+        description:
+          defaultSelected.length > 0
+            ? `${defaultSelected.length} tabela(s) de orçamento pré-selecionada(s). Confira a seleção antes de continuar.`
+            : "Selecione as tabelas de orçamento detalhado para continuar.",
       });
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar arquivo";
@@ -661,18 +580,25 @@ export function OrcamentoPdfWizard({
     );
   };
 
-  const handleConfirmSelection = async () => {
+  const handleTablesContinue = () => {
+    if (selectedTableIds.length === 0) return;
+    setPhase("selecting_analysis");
+    setErrorMessage("");
+  };
+
+  const handleRunAnalysis = async () => {
     if (!file || !uploadId || selectedTableIds.length === 0) return;
+    if (selectedAnalysisTypes.length === 0) {
+      toast.warning("Selecione um tipo de análise");
+      return;
+    }
 
     setPhase("processing_ai");
-    setProcessingDetail("Enfileirando análise no servidor…");
+    setProcessingDetail("Extraindo itens das tabelas selecionadas…");
+    setProgressPercent(10);
+    setErrorMessage("");
 
     try {
-      const selectedLabels = selectedTableIds
-        .map((id) => tableOptions.find((t) => t.id === id)?.name || id)
-        .join(", ");
-      console.info(`[${logTag}] Tabelas enviadas ao backend:`, selectedTableIds, selectedLabels);
-
       const selectedTablePreviews = selectedTableIds
         .map((id) => tableOptions.find((t) => t.id === id))
         .filter((t): t is MockTableOption => Boolean(t))
@@ -683,27 +609,46 @@ export function OrcamentoPdfWizard({
           imagem_base64: t.imagem_base64,
         }));
 
-      processingTableIdsRef.current = selectedTableIds;
-      processingPreviewsRef.current = selectedTablePreviews;
-
-      await enqueueAbcProcess(uploadId, selectedTableIds);
-      appendAbcAnalysisUploadId(uploadId);
-      untrackAbcBackgroundJob(uploadId);
-
-      toast.success(
-        `${selectedTableIds.length} tabela(s) em análise`,
-        {
-          description:
-            "Acompanhe em Lista de análises. O processamento continua em segundo plano.",
-          duration: 8000,
-        },
+      setProgressPercent(40);
+      const result = await processOrcamentoTables(
+        uploadId,
+        selectedTableIds,
+        selectedAnalysisTypes,
       );
-      setProcessingDetail("IA processando na fila do servidor…");
+
+      setProgressPercent(100);
+      setProcessingDetail("Análise concluída — abrindo validação…");
+
+      const itemsFound = Number(result.items_found ?? result.items?.length ?? 0);
+      const expectedRows = selectedTableIds.reduce((sum, id) => {
+        const table = tableOptions.find((t) => t.id === id);
+        return sum + Number(table?.row_count ?? 0);
+      }, 0);
+      if (expectedRows > 0 && itemsFound < expectedRows * 0.35) {
+        toast.warning("Poucos itens extraídos", {
+          description: `Foram extraídos ${itemsFound} itens de ~${expectedRows} linhas nas tabelas. Selecione as planilhas completas (Pág. 3–8) ou reprocesse.`,
+        });
+      } else {
+        toast.success(result.message || "Análise concluída");
+      }
+
+      await finishWithResult(
+        uploadId,
+        {
+          ...result,
+          structured_items: result.structured_items ?? result.items,
+          hierarchical_items: result.hierarchical_items ?? result.items,
+          ia_metadata: { engine: result.engine, analysis_types: result.analysis_types },
+        },
+        file,
+        selectedTableIds,
+        selectedTablePreviews,
+      );
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : "Erro ao processar com IA";
+      const msg = error instanceof Error ? error.message : "Erro ao processar tabelas";
       setErrorMessage(msg);
-      setPhase("selecting_table");
-      toast.error("Falha ao processar", { description: msg });
+      setPhase("selecting_analysis");
+      toast.error("Falha na análise", { description: msg });
     }
   };
 
@@ -711,10 +656,16 @@ export function OrcamentoPdfWizard({
     phase === "uploading" || (!isFullPdf && phase === "detecting");
   const showTablePhase =
     !isFullPdf &&
-    (phase === "detecting" || phase === "selecting_table" || phase === "processing_ai");
+    (phase === "detecting" ||
+      phase === "selecting_table" ||
+      phase === "selecting_analysis" ||
+      phase === "processing_ai");
   const wizardStep = getWizardStep(phase, mode);
   const canRemoveFile =
-    phase === "pick_file" || phase === "selecting_table" || (isFullPdf && phase === "uploading");
+    phase === "pick_file" ||
+    phase === "selecting_table" ||
+    phase === "selecting_analysis" ||
+    (isFullPdf && phase === "uploading");
   const showQueuePanel = isFullPdf && queueItems.length > 0;
 
   return (
@@ -757,9 +708,7 @@ export function OrcamentoPdfWizard({
               <p className="text-sm text-slate-500">ou clique para selecionar</p>
               <p className="mt-2 text-xs text-slate-400">
                 {allowsMultiple
-                  ? enableMultiUpload && !isFullPdf
-                    ? `Até ${MAX_BATCH_PDF_FILES} arquivos — lotes vão para a Lista de análises`
-                    : `Até ${MAX_BATCH_PDF_FILES} arquivos — processamento sequencial em fila`
+                  ? `Até ${MAX_BATCH_PDF_FILES} arquivos — processamento sequencial em fila`
                   : "Suporta arquivos PDF de até 50MB"}
               </p>
             </div>
@@ -816,11 +765,7 @@ export function OrcamentoPdfWizard({
                     </div>
                     {!isFullPdf ? (
                       <p className="mb-2 text-xs text-blue-600">
-                        Esta análise aparece na{" "}
-                        <Link to="/lista-analises" className="font-medium underline">
-                          Lista de análises
-                        </Link>{" "}
-                        — você pode sair desta tela.
+                        Extraindo dados das tabelas com o motor local de análise.
                       </p>
                     ) : null}
                     {processingDetail ? (
@@ -868,7 +813,7 @@ export function OrcamentoPdfWizard({
                 </button>
               )}
 
-              {showTablePhase && (
+              {showTablePhase && phase !== "selecting_analysis" && (
                 <TableSelector
                   tables={tableOptions}
                   loading={phase === "uploading" || phase === "detecting"}
@@ -877,9 +822,38 @@ export function OrcamentoPdfWizard({
                   layout="large"
                   onSelect={handleSelectTable}
                   onSetSelectedIds={setSelectedTableIds}
-                  onConfirm={() => void handleConfirmSelection()}
-                  confirmLabel="Analisar com IA"
+                  onConfirm={() => handleTablesContinue()}
+                  confirmLabel="Continuar"
                 />
+              )}
+
+              {showTablePhase && phase === "selecting_analysis" && (
+                <div className="mt-4 space-y-4 border-t border-slate-100 pt-4">
+                  <p className="text-sm text-slate-600">
+                    {selectedTableIds.length} tabela(s) selecionada(s). Escolha a análise desejada.
+                  </p>
+                  <AnalysisTypeSelector
+                    selected={selectedAnalysisTypes}
+                    onChange={setSelectedAnalysisTypes}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                      onClick={() => setPhase("selecting_table")}
+                    >
+                      Voltar às tabelas
+                    </button>
+                    <button
+                      type="button"
+                      className={`${btnPrimary} flex-1 py-2.5 sm:flex-none`}
+                      disabled={selectedAnalysisTypes.length === 0}
+                      onClick={() => void handleRunAnalysis()}
+                    >
+                      Processar análise
+                    </button>
+                  </div>
+                </div>
               )}
             </div>
           )}

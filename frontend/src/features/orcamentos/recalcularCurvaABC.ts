@@ -7,9 +7,9 @@ export interface OrcamentoItem {
   item?: string;
   tipo?: string;
   banco?: string;
-  /** Código de referência do edital/PDF (SINAPI, DER, etc.). */
+  /** Numeração hierárquica do edital/PDF (ex.: 1.1.2, 2.1.1). */
   code: string;
-  /** Código interno do cliente — busca no catálogo. */
+  /** Código da base de preços (SINAPI, SICRO, cotação, etc.). */
   catalogCode?: string;
   description: string;
   bdi: number;
@@ -19,7 +19,7 @@ export interface OrcamentoItem {
   unitPrice: number;
   /** Preço total com BDI: qty × unitPrice × (1 + bdi/100). */
   lineTotal: number;
-  /** Referência do edital antes de aplicar catálogo (s/ BDI). */
+  /** Referência do edital antes de ajustes manuais (s/ BDI). */
   referenceUnitPrice?: number;
   /** Total c/ BDI da referência do edital. */
   referenceLineTotal?: number;
@@ -89,6 +89,26 @@ export function unitPriceSemBdiFromComBdi(
   return unitComBdi / factor;
 }
 
+/** BDI válido para orçamento público brasileiro (0–100%). */
+export function sanitizeBdiPercent(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (value <= 100) return value;
+  return 0;
+}
+
+/** Infere BDI% a partir de qty, unit s/ BDI e total c/ BDI. */
+export function inferBdiPercent(
+  qty: number,
+  unitPriceSemBdi: number,
+  valorTotalComBdi: number,
+): number {
+  if (qty <= 0 || unitPriceSemBdi <= 0 || valorTotalComBdi <= 0) return 0;
+  const base = qty * unitPriceSemBdi;
+  if (valorTotalComBdi <= base * 1.001) return 0;
+  const inferred = (valorTotalComBdi / base - 1) * 100;
+  return inferred > 0 && inferred <= 100 ? Math.round(inferred * 100) / 100 : 0;
+}
+
 /** Resolve qty, BDI e unitPrice (s/ BDI) a partir de item estruturado do backend. */
 export function resolveStructuredItemPricing(item: {
   quantidade?: unknown;
@@ -105,19 +125,30 @@ export function resolveStructuredItemPricing(item: {
   BDI?: unknown;
 }): { qty: number; bdi: number; unitPrice: number } {
   const qty = parseEditableNumber(item.quantidade ?? item.Quantidade ?? item.qty);
-  const bdi = parseEditableNumber(String(item.bdi ?? item.BDI ?? 0).replace("%", ""));
+  const valorTotalComBdi = parseEditableNumber(
+    item.valor_total ?? item.Total ?? item.totalValue,
+  );
 
-  let unitComBdi = parseEditableNumber(
+  let bdi = sanitizeBdiPercent(
+    parseEditableNumber(String(item.bdi ?? item.BDI ?? 0).replace("%", "")),
+  );
+
+  let unitPriceSemBdi = parseEditableNumber(
     item.valor_unitario ?? item["Valor Unitário"] ?? item.unitValue ?? item.unitPrice,
   );
-  const valorTotal = parseEditableNumber(item.valor_total ?? item.Total ?? item.totalValue);
 
-  if (unitComBdi <= 0 && valorTotal > 0 && qty > 0) {
-    unitComBdi = valorTotal / qty;
+  if (bdi <= 0) {
+    bdi = inferBdiPercent(qty, unitPriceSemBdi, valorTotalComBdi);
   }
 
-  const unitPrice = unitPriceSemBdiFromComBdi(unitComBdi, bdi);
-  return { qty, bdi, unitPrice };
+  if (unitPriceSemBdi <= 0 && valorTotalComBdi > 0 && qty > 0) {
+    unitPriceSemBdi =
+      bdi > 0
+        ? valorTotalComBdi / qty / (1 + bdi / 100)
+        : valorTotalComBdi / qty;
+  }
+
+  return { qty, bdi, unitPrice: unitPriceSemBdi };
 }
 
 /**
@@ -129,7 +160,11 @@ export function recalcularCurvaABC(items: OrcamentoItem[]): OrcamentoItem[] {
   const executives = items
     .filter(isExecutiveItem)
     .map((item) => {
-      const lineTotal = calcularLineTotalComBdi(item.qty, item.unitPrice, item.bdi);
+      const calculated = calcularLineTotalComBdi(item.qty, item.unitPrice, item.bdi);
+      const lineTotal =
+        item.referenceLineTotal && item.referenceLineTotal > 0
+          ? item.referenceLineTotal
+          : calculated;
       return { ...item, lineTotal };
     });
 
@@ -193,4 +228,25 @@ export function calcularResumoAbc(items: OrcamentoItem[]): AbcResumo {
     classeB: sumByClass("B"),
     classeC: sumByClass("C"),
   };
+}
+
+/** Guarda preço de referência do edital/PDF na primeira vez. */
+export function snapshotReferenciaOrcamento(item: OrcamentoItem): OrcamentoItem {
+  if (item.referenceLineTotal != null && item.referenceLineTotal > 0) {
+    return item;
+  }
+  const refTotal = calcularLineTotalComBdi(item.qty, item.unitPrice, item.bdi);
+  return {
+    ...item,
+    referenceUnitPrice: item.unitPrice,
+    referenceLineTotal: refTotal,
+  };
+}
+
+/** Economia quando o preço atual é menor que a referência do edital. */
+export function calcularEconomia(item: OrcamentoItem): number {
+  const referencia = item.referenceLineTotal ?? 0;
+  const atual = item.lineTotal ?? 0;
+  if (referencia <= 0 || atual <= 0) return 0;
+  return Math.max(0, referencia - atual);
 }

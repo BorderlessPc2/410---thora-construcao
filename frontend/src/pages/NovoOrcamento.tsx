@@ -3,7 +3,7 @@ import {
   OrcamentoPdfWizard,
   type OrcamentoWizardResult,
 } from "../components/orcamento/OrcamentoPdfWizard";
-import { ANALISE_ABC_WIZARD_STEPS } from "../features/orcamentos/novoOrcamentoWizard";
+import { ANALISE_ORCAMENTO_WIZARD_STEPS } from "../features/orcamentos/novoOrcamentoWizard";
 
 export default function NovoOrcamento() {
   const navigate = useNavigate();
@@ -23,6 +23,7 @@ export default function NovoOrcamento() {
         },
         hierarchicalItems: result.hierarchicalItems,
         iaMetadata: result.iaMetadata,
+        analysisTypes: result.analysisTypes,
       },
     });
   };
@@ -30,15 +31,11 @@ export default function NovoOrcamento() {
   return (
     <div className="mx-auto w-full max-w-5xl px-4 py-6 pb-12 sm:px-6">
       <OrcamentoPdfWizard
-        steps={ANALISE_ABC_WIZARD_STEPS}
-        title="Análise Curva ABC"
-        subtitle={`Passo 1 de ${ANALISE_ABC_WIZARD_STEPS.length} — envie um PDF ou vários editais; lotes seguem para a Lista de análises.`}
-        processingLabel="Passo 3 — IA analisando tabelas e montando a Curva ABC…"
-        logTag="Curva ABC"
-        enableMultiUpload
-        onBatchUpload={(files) => {
-          navigate("/lista-analises", { state: { pendingFiles: files } });
-        }}
+        steps={ANALISE_ORCAMENTO_WIZARD_STEPS}
+        title="Análise de Orçamento"
+        subtitle={`Passo 1 de ${ANALISE_ORCAMENTO_WIZARD_STEPS.length} — envie o PDF e selecione as tabelas para analisar.`}
+        processingLabel="Extraindo itens e montando a análise…"
+        logTag="Análise de Orçamento"
         onComplete={handleComplete}
       />
     </div>

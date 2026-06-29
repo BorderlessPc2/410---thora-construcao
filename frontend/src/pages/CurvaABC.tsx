@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
   ArrowLeft,
   TrendingUp,
@@ -9,7 +9,6 @@ import {
   Download,
   ChevronRight,
   Loader2,
-  Calculator,
 } from "lucide-react";
 import {
   BarChart,
@@ -28,6 +27,7 @@ import { CURVA_ABC_ONLY } from "../features/orcamentos/outputModels";
 import { useAuth } from "../features/auth/AuthContext";
 import { getLatestBDIAplicado } from "../features/bdi/bdiAplicadoRepository";
 import type { BDIAplicado } from "../types/bdi";
+import { toast } from "sonner";
 
 interface Item {
   id: string;
@@ -282,12 +282,8 @@ const CurvaABC: React.FC = () => {
         warnings: Array.isArray(response?.warnings) ? response.warnings : [],
       });
 
-      navigate(`/analise-detalhada/${uploadId}`, {
-        state: {
-          uploadId,
-          analysisResponse: response,
-          curvaItems: nextItems,
-        },
+      toast.success("Itens padronizados com IA", {
+        description: `${nextItems.length} itens atualizados na Curva ABC.`,
       });
     } catch (error: any) {
       setAiError(error.message || "Erro ao padronizar itens com IA");
@@ -366,7 +362,7 @@ const CurvaABC: React.FC = () => {
         <div className="flex items-center gap-4 mb-8">
           <button
             type="button"
-            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/orcamento")}
+            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/analise-orcamento")}
             className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-200"
             aria-label="Voltar para validação"
           >
@@ -421,24 +417,15 @@ const CurvaABC: React.FC = () => {
           <>
             {bdiAplicado && uploadId && (
               <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm text-blue-900">
-                    Este orçamento considera BDI de{" "}
-                    <strong>
-                      {bdiAplicado.bdiPercentual.toLocaleString("pt-BR", {
-                        minimumFractionDigits: 2,
-                      })}
-                      %
-                    </strong>
-                  </p>
-                  <Link
-                    to={`/bdi/${uploadId}`}
-                    className="inline-flex items-center gap-1 text-sm font-medium text-blue-700 hover:underline"
-                  >
-                    <Calculator className="h-4 w-4" />
-                    Ver detalhes
-                  </Link>
-                </div>
+                <p className="text-sm text-blue-900">
+                  Este orçamento considera BDI de{" "}
+                  <strong>
+                    {bdiAplicado.bdiPercentual.toLocaleString("pt-BR", {
+                      minimumFractionDigits: 2,
+                    })}
+                    %
+                  </strong>
+                </p>
               </div>
             )}
             {items.length === 0 ? (
@@ -699,7 +686,7 @@ const CurvaABC: React.FC = () => {
         {/* Botões de Ação */}
         <div className="flex gap-4 justify-between">
           <button
-            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/orcamento")}
+            onClick={() => navigate(uploadId ? `/validacao/${uploadId}` : "/analise-orcamento")}
             className="px-6 py-2 bg-slate-200 text-slate-800 rounded-lg hover:bg-slate-300 transition font-medium"
           >
             ← Voltar
@@ -723,7 +710,7 @@ const CurvaABC: React.FC = () => {
                   : "bg-blue-600 text-white hover:bg-blue-700"
               }`}
             >
-              {aiLoading ? "Processando IA..." : "Próximo: IA"} <ChevronRight size={18} />
+              {aiLoading ? "Processando IA..." : "Padronizar com IA"} <ChevronRight size={18} />
             </button>
           </div>
         </div>

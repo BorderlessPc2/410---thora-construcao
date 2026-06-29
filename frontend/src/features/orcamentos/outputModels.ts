@@ -68,7 +68,6 @@ export type NovoOrcamentoFlowState = {
   file?: File;
   uploadId?: string;
   filename?: string;
-  fromListaAnalises?: boolean;
   selectedTableIds?: string[];
   selectedTablePreviews?: unknown[];
   extractedData?: unknown[];
@@ -79,4 +78,5 @@ export type NovoOrcamentoFlowState = {
   };
   hierarchicalItems?: unknown[];
   iaMetadata?: unknown;
+  analysisTypes?: string[];
 };

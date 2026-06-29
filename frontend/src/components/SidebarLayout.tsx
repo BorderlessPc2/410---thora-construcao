@@ -1,16 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import {
-  Home,
-  BarChart3,
-  Menu,
-  X,
-  LogOut,
-  Upload,
-  Calculator,
-  Package,
-  ListChecks,
-} from "lucide-react";
+import { Home, Menu, X, LogOut, Upload } from "lucide-react";
 import { signOutCurrentUser } from "../features/auth/authService";
 
 interface SidebarLayoutProps {
@@ -28,19 +18,13 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
   }, [location.pathname]);
 
   const isActive = (path: string) => {
-    if (path === "/orcamento") {
+    if (path === "/analise-orcamento" || path === "/orcamento") {
       return (
-        location.pathname === path ||
-        location.pathname.startsWith(`${path}/`) ||
+        location.pathname === "/analise-orcamento" ||
+        location.pathname === "/orcamento" ||
         location.pathname.startsWith("/validacao") ||
         location.pathname.startsWith("/curva-abc")
       );
-    }
-    if (path === "/lista-analises") {
-      return location.pathname.startsWith("/lista-analises");
-    }
-    if (path === "/bdi") {
-      return location.pathname === "/bdi" || location.pathname.startsWith("/bdi/");
     }
     return (
       location.pathname === path || location.pathname.startsWith(`${path}/`)
@@ -49,11 +33,7 @@ const SidebarLayout: React.FC<SidebarLayoutProps> = ({ children }) => {
 
   const menuItems = [
     { path: "/", label: "Dashboard", icon: Home },
-    { path: "/orcamento", label: "Curva ABC", icon: Upload },
-    { path: "/lista-analises", label: "Lista de análises", icon: ListChecks },
-    { path: "/catalogo", label: "Meu Catálogo", icon: Package },
-    { path: "/bdi", label: "BDI", icon: Calculator },
-    { path: "/relatorios", label: "Relatórios", icon: BarChart3 },
+    { path: "/analise-orcamento", label: "Análise de Orçamento", icon: Upload },
   ];
 
   const asideWidth = sidebarOpen ? "w-64" : "w-20";
