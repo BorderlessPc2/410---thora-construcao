@@ -1315,3 +1315,28 @@ export const analisarLinhasOrcamento = async (payload: AnalisarLinhasPayload) =>
     );
   }
 };
+
+export type CorrecaoAnaliseIAPayload = {
+  upload_id?: string;
+  versao_modelo: string;
+  nome_arquivo?: string;
+  contexto?: {
+    bdi_global_percent?: number;
+    tolerancia_monetaria?: number;
+    tolerancia_percentual?: number;
+  };
+  linhas_com_problema: Record<string, unknown>[];
+};
+
+export const enviarCorrecaoAnaliseIA = async (payload: CorrecaoAnaliseIAPayload) => {
+  try {
+    const response = await apiClient.post("/api/orcamentos/analise/correcao-ia", payload, {
+      timeout: 120000,
+    });
+    return response.data;
+  } catch (error: any) {
+    throw new Error(
+      error.response?.data?.detail || "Erro ao enviar correção para análise com IA",
+    );
+  }
+};

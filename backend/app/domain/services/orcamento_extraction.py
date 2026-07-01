@@ -483,6 +483,7 @@ async def process_selected_tables(
                 table_page=page,
                 table_name=candidate_name or None,
                 table_image_base64=table_image_b64,
+                user_id=user_id,
             )
         except OpenAIServiceError as exc:
             logger.warning("Erro IA na tabela %s: %s", table_id, exc)

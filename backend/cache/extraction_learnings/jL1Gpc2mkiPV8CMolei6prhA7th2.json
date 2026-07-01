@@ -1,0 +1,24 @@
+{
+  "user_id": "jL1Gpc2mkiPV8CMolei6prhA7th2",
+  "entries": [
+    {
+      "created_at": "2026-07-01T16:26:45.174576+00:00",
+      "upload_id": "a99e9736-ff71-45ca-a7c4-1b511429d34c",
+      "diagnostico_resumo": "Os problemas identificados nas linhas são principalmente devido a pequenas divergências nos cálculos do preço total com BDI e inconsistências no percentual de BDI informado em relação ao BDI global. A maioria das divergências nos cálculos é menor que a tolerância monetária, indicando que o problema pode estar relacionado a arredondamentos ou formatação do PDF.",
+      "itens_analisados": 9,
+      "aprendizados": [
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global."
+      ]
+    }
+  ]
+}

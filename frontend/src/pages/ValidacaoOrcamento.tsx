@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useNavigate, useLocation, useParams } from "react-router-dom";
 import { Document, Page, pdfjs } from "react-pdf"; // <--- Imports do PDF
 import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -53,6 +53,7 @@ import {
   mensagensAnaliseLinha,
   resultadoAnalisePorId,
 } from "../features/orcamentos/analiseOrcamento";
+import type { DadosExtraidosLinha } from "../features/orcamentos/analiseOrcamento/correcaoAnalise";
 import { AnaliseOrcamentoResumo } from "../components/orcamento/AnaliseOrcamentoResumo";
 import { AnaliseOrcamentoStatusBadge } from "../components/orcamento/AnaliseOrcamentoStatusBadge";
 
@@ -333,6 +334,34 @@ export default function ValidacaoOrcamento() {
     () => resultadoAnalisePorId(resultadoAnalise),
     [resultadoAnalise],
   );
+
+  const handleVerLinhaAnalise = useCallback((linhaId: string | number) => {
+    const el = document.getElementById(`orcamento-linha-${linhaId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("ring-2", "ring-blue-500", "ring-offset-1");
+    window.setTimeout(() => {
+      el.classList.remove("ring-2", "ring-blue-500", "ring-offset-1");
+    }, 2500);
+  }, []);
+
+  const dadosExtraidosPorId = useMemo(() => {
+    const map = new Map<string | number, DadosExtraidosLinha>();
+    for (const item of items) {
+      map.set(item.id, {
+        itemNumero: item.item,
+        codigo: item.catalogCode ?? item.code,
+        banco: item.banco,
+        descricao: item.description,
+        unidade: item.unit,
+        quantidade: item.qty,
+        precoUnitario: item.unitPrice,
+        precoTotalComBdi: item.lineTotal,
+        bdiPercent: item.bdi,
+      });
+    }
+    return map;
+  }, [items]);
 
   const economiaTotal = useMemo(
     () => items.reduce((sum, item) => sum + calcularEconomia(item), 0),
@@ -1211,7 +1240,13 @@ export default function ValidacaoOrcamento() {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-600">
                   Análise determinística (sem IA)
                 </p>
-                <AnaliseOrcamentoResumo resultado={resultadoAnalise} />
+                <AnaliseOrcamentoResumo
+                  resultado={resultadoAnalise}
+                  uploadId={resolvedUploadId}
+                  nomeArquivo={pdfFile?.name ?? (flowState?.filename as string | undefined)}
+                  dadosExtraidosPorId={dadosExtraidosPorId}
+                  onVerLinha={handleVerLinhaAnalise}
+                />
                 <p className="mt-3 text-xs text-slate-500">
                   Verifica cálculos, BDI e memória de cálculo nas observações. Grupos, capítulos e
                   subtotais são ignorados automaticamente.
@@ -1340,6 +1375,7 @@ export default function ValidacaoOrcamento() {
                       return (
                       <tr
                         key={item.id}
+                        id={`orcamento-linha-${item.id}`}
                         className={`transition group ${
                           item.selected ? 'bg-blue-50/40' : rowBgClass
                         }`}

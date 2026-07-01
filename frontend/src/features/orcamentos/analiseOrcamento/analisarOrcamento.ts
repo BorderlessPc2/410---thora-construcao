@@ -6,6 +6,7 @@ import {
   mapRawToLinhaOrcamentoEntrada,
   mergeObservacoesNasLinhas,
 } from "./mapEntrada";
+import { inferirBdisValidosDocumento } from "./tolerancias";
 import type { LinhaAnalitica } from "../orcamentoAnalitico";
 import type { OrcamentoItem } from "../recalcularCurvaABC";
 import {
@@ -38,8 +39,14 @@ export function analisarLinhasOrcamento(
       ? contexto.bdiGlobalPercent
       : inferirBdiGlobal(linhasEntrada);
 
+  const bdisValidos =
+    contexto?.bdisValidosDocumento && contexto.bdisValidosDocumento.length > 0
+      ? contexto.bdisValidosDocumento
+      : inferirBdisValidosDocumento(linhasEntrada);
+
   const contextoResolvido = {
     bdiGlobalPercent: bdiGlobal,
+    bdisValidosDocumento: bdisValidos,
     toleranciaMonetaria: contexto?.toleranciaMonetaria ?? CONTEXTO_PADRAO.toleranciaMonetaria,
     toleranciaPercentual: contexto?.toleranciaPercentual ?? CONTEXTO_PADRAO.toleranciaPercentual,
   };

@@ -52,6 +52,7 @@ export type LinhaOrcamentoEntrada = {
 
 export type ContextoAnaliseOrcamento = {
   bdiGlobalPercent?: number;
+  bdisValidosDocumento?: number[];
   toleranciaMonetaria?: number;
   toleranciaPercentual?: number;
 };
@@ -82,10 +83,13 @@ export type ResultadoAnaliseOrcamento = {
   resumo: ResumoAnaliseOrcamento;
 };
 
-export const ANALISE_ORCAMENTO_VERSAO = "1.0";
+export const ANALISE_ORCAMENTO_VERSAO = "1.1";
 
-export const CONTEXTO_PADRAO: Required<ContextoAnaliseOrcamento> = {
+export const CONTEXTO_PADRAO: Required<Omit<ContextoAnaliseOrcamento, "bdisValidosDocumento">> & {
+  bdisValidosDocumento: number[];
+} = {
   bdiGlobalPercent: 0,
+  bdisValidosDocumento: [],
   toleranciaMonetaria: 0.02,
   toleranciaPercentual: 0.5,
 };

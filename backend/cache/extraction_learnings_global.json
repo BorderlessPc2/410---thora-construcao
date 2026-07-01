@@ -1,0 +1,60 @@
+{
+  "rules": [
+    "Em planilhas NOVACAP, usar preco unitario ja com BDI",
+    "Considere arredondamentos ao calcular o preço total com BDI.",
+    "Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+    "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+    "Considerar arredondamentos consistentes nos cálculos de BDI.",
+    "Permitir BDI específico por linha se informado no PDF."
+  ],
+  "entries": [
+    {
+      "id": "24dcb215-3a74-4c4d-89c2-000ee7ceb24a",
+      "created_at": "2026-07-01T16:25:19.138063+00:00",
+      "user_id": "test",
+      "upload_id": "u1",
+      "nome_arquivo": null,
+      "diagnostico_resumo": "teste",
+      "itens_analisados": 1,
+      "aprendizados": [
+        "Em planilhas NOVACAP, usar preco unitario ja com BDI"
+      ],
+      "scope": "global"
+    },
+    {
+      "created_at": "2026-07-01T16:26:45.174576+00:00",
+      "upload_id": "a99e9736-ff71-45ca-a7c4-1b511429d34c",
+      "diagnostico_resumo": "Os problemas identificados nas linhas são principalmente devido a pequenas divergências nos cálculos do preço total com BDI e inconsistências no percentual de BDI informado em relação ao BDI global. A maioria das divergências nos cálculos é menor que a tolerância monetária, indicando que o problema pode estar relacionado a arredondamentos ou formatação do PDF.",
+      "itens_analisados": 9,
+      "aprendizados": [
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Considere arredondamentos ao calcular o preço total com BDI.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global.",
+        "Considere arredondamentos ao calcular o preço total com BDI. Verifique se o BDI específico da linha é intencionalmente diferente do global."
+      ],
+      "migrated_from": "jL1Gpc2mkiPV8CMolei6prhA7th2"
+    },
+    {
+      "id": "6948028b-2f36-4af1-9cd5-2f9d72eec3a0",
+      "created_at": "2026-07-01T16:28:28.801126+00:00",
+      "user_id": "jL1Gpc2mkiPV8CMolei6prhA7th2",
+      "upload_id": "a99e9736-ff71-45ca-a7c4-1b511429d34c",
+      "nome_arquivo": "3 Orçamento SEM Desoneração.pdf",
+      "diagnostico_resumo": "A maioria dos problemas está relacionada a pequenas divergências nos cálculos de BDI e a discrepâncias entre o BDI global e o BDI informado nas linhas. As diferenças são mínimas e podem ser atribuídas a arredondamentos ou extração incorreta de valores.",
+      "itens_analisados": 9,
+      "aprendizados": [
+        "Considerar arredondamentos consistentes nos cálculos de BDI.",
+        "Permitir BDI específico por linha se informado no PDF."
+      ],
+      "scope": "global"
+    }
+  ],
+  "updated_at": "2026-07-01T16:28:28.801126+00:00"
+}

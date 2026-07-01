@@ -5,3 +5,5 @@ export * from "./memoriaCalculo";
 export * from "./analisarLinha";
 export * from "./mapEntrada";
 export * from "./analisarOrcamento";
+export * from "./correcaoAnalise";
+export * from "./tolerancias";

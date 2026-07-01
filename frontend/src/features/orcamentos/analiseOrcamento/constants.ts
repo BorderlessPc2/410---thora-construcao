@@ -35,3 +35,11 @@ export const SUBTOTAL_DESCRICAO_EXATA = new Set([
 ]);
 
 export const EXCLUSAO_TIPO_LINHA = new Set(["grupo", "titulo", "título", "title"]);
+
+export const REGRA_ANALISE_LABELS: Record<string, string> = {
+  CALC_SUBTOTAL: "Cálculo do subtotal",
+  CALC_BDI: "Cálculo c/ BDI",
+  BDI_GLOBAL: "BDI global",
+  MEMORIA_CALCULO: "Memória de cálculo",
+  CAMPOS_OBRIGATORIOS: "Campos obrigatórios",
+};

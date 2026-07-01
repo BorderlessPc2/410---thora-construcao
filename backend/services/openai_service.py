@@ -974,6 +974,7 @@ async def process_selected_table(
     table_page: int,
     table_name: str | None = None,
     table_image_base64: str | None = None,
+    user_id: str | None = None,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Processa a tabela escolhida com IA (OpenAI ou Gemini) e retorna JSON estruturado.
@@ -982,7 +983,9 @@ async def process_selected_table(
     t0 = time.perf_counter()
 
     table_structure = detect_table_structure(table_rows)
-    system_msg = EXTRACTION_SYSTEM_PROMPT
+    from services.extraction_learning import build_extraction_system_prompt
+
+    system_msg = build_extraction_system_prompt(user_id, EXTRACTION_SYSTEM_PROMPT)
     user_msg = _build_selected_table_prompt(
         table_rows,
         table_page,

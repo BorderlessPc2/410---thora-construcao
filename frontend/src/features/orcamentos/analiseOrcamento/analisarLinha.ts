@@ -1,6 +1,11 @@
 import { isLinhaAnalisavel, motivoExclusaoLinha } from "./filtrarLinhas";
 import { analisarMemoriaCalculo } from "./memoriaCalculo";
 import {
+  inferirBdisValidosDocumento,
+  linhaBdiConfereDocumento,
+  toleranciaMonetariaEfetiva,
+} from "./tolerancias";
+import {
   ANALISE_ORCAMENTO_VERSAO,
   CONTEXTO_PADRAO,
   type ContextoAnaliseOrcamento,
@@ -16,6 +21,8 @@ function roundMoney(value: number): number {
 function resolveContexto(contexto?: ContextoAnaliseOrcamento) {
   return {
     bdiGlobalPercent: contexto?.bdiGlobalPercent ?? CONTEXTO_PADRAO.bdiGlobalPercent,
+    bdisValidosDocumento:
+      contexto?.bdisValidosDocumento ?? CONTEXTO_PADRAO.bdisValidosDocumento,
     toleranciaMonetaria: contexto?.toleranciaMonetaria ?? CONTEXTO_PADRAO.toleranciaMonetaria,
     toleranciaPercentual: contexto?.toleranciaPercentual ?? CONTEXTO_PADRAO.toleranciaPercentual,
   };
@@ -90,7 +97,7 @@ export function analisarLinhaOrcamento(
   const subtotalCheck = compararValores(
     subtotalCalculado,
     subtotalInformado,
-    resolved.toleranciaMonetaria,
+    toleranciaMonetariaEfetiva(subtotalInformado, resolved.toleranciaMonetaria),
   );
 
   verificacoes.push({
@@ -112,7 +119,7 @@ export function analisarLinhaOrcamento(
     const bdiCheck = compararValores(
       totalComBdiCalculado,
       totalComBdiInformado,
-      resolved.toleranciaMonetaria,
+      toleranciaMonetariaEfetiva(totalComBdiInformado, resolved.toleranciaMonetaria),
     );
 
     verificacoes.push({
@@ -127,9 +134,21 @@ export function analisarLinhaOrcamento(
         : `Total c/ BDI divergente: esperado ${totalComBdiCalculado}, informado ${totalComBdiInformado}.`,
     });
 
-    if (resolved.bdiGlobalPercent > 0) {
-      const bdiGlobalCheck =
-        Math.abs(linha.bdiPercent - resolved.bdiGlobalPercent) <= resolved.toleranciaPercentual;
+    const deveVerificarBdiDocumento =
+      resolved.bdiGlobalPercent > 0 || resolved.bdisValidosDocumento.length > 0;
+
+    if (deveVerificarBdiDocumento) {
+      const bdiGlobalCheck = linhaBdiConfereDocumento(
+        linha.bdiPercent,
+        resolved.bdisValidosDocumento,
+        resolved.bdiGlobalPercent,
+        resolved.toleranciaPercentual,
+      );
+
+      const bdisLabel =
+        resolved.bdisValidosDocumento.length > 1
+          ? resolved.bdisValidosDocumento.map((b) => `${b}%`).join(", ")
+          : `${resolved.bdiGlobalPercent}%`;
 
       verificacoes.push({
         regraId: "BDI_GLOBAL",
@@ -139,8 +158,10 @@ export function analisarLinhaOrcamento(
         valorInformado: linha.bdiPercent,
         diferenca: roundMoney(Math.abs(linha.bdiPercent - resolved.bdiGlobalPercent)),
         mensagem: bdiGlobalCheck
-          ? `BDI ${linha.bdiPercent}% confere com o BDI global (${resolved.bdiGlobalPercent}%).`
-          : `BDI da linha (${linha.bdiPercent}%) difere do BDI global (${resolved.bdiGlobalPercent}%).`,
+          ? resolved.bdisValidosDocumento.length > 1
+            ? `BDI ${linha.bdiPercent}% confere com os BDIs do documento (${bdisLabel}).`
+            : `BDI ${linha.bdiPercent}% confere com o BDI predominante (${bdisLabel}).`
+          : `BDI da linha (${linha.bdiPercent}%) não corresponde aos BDIs do documento (${bdisLabel}).`,
       });
     }
   } else {

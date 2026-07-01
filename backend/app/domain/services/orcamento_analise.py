@@ -207,10 +207,49 @@ def _inferir_bdi_global(linhas: list[dict[str, Any]]) -> float:
     return max(freq, key=freq.get)
 
 
+def _tolerancia_monetaria_efetiva(valor_referencia: float, tolerancia_base: float) -> float:
+    if valor_referencia <= 0:
+        return max(tolerancia_base, 0.05)
+    return min(2.0, max(tolerancia_base, 0.05, valor_referencia * 0.00005))
+
+
+def _inferir_bdis_validos_documento(linhas: list[dict[str, Any]]) -> list[float]:
+    freq: dict[float, int] = {}
+    linhas_com_bdi = 0
+    for linha in linhas:
+        bdi = _parse_number(linha.get("bdi") or linha.get("bdi_percent") or linha.get("BDI"))
+        if bdi <= 0:
+            continue
+        linhas_com_bdi += 1
+        arredondado = round(bdi, 2)
+        freq[arredondado] = freq.get(arredondado, 0) + 1
+    if linhas_com_bdi == 0:
+        return []
+    limiar = max(2, int((linhas_com_bdi * 0.08) + 0.999))
+    return sorted(
+        [bdi for bdi, count in freq.items() if count >= limiar],
+        reverse=True,
+    )
+
+
+def _linha_bdi_confere_documento(
+    bdi_linha: float,
+    bdis_validos: list[float],
+    bdi_global: float,
+    tolerancia_percentual: float,
+) -> bool:
+    if len(bdis_validos) > 1:
+        return any(abs(bdi_linha - bdi) <= tolerancia_percentual for bdi in bdis_validos)
+    if bdi_global > 0:
+        return abs(bdi_linha - bdi_global) <= tolerancia_percentual
+    return True
+
+
 def analisar_linha_orcamento(
     linha: dict[str, Any],
     *,
     bdi_global: float = 0.0,
+    bdis_validos_documento: list[float] | None = None,
     tolerancia_monetaria: float = 0.02,
     tolerancia_percentual: float = 0.5,
 ) -> dict[str, Any]:
@@ -254,10 +293,13 @@ def analisar_linha_orcamento(
             "verificacoes": [],
         }
 
+    bdis_validos = bdis_validos_documento or []
+
     verificacoes: list[dict[str, Any]] = []
     subtotal_calc = _round_money(quantidade * preco_unitario)
     subtotal_info = preco_total_sem_bdi if preco_total_sem_bdi > 0 else subtotal_calc
-    subtotal_ok = abs(subtotal_calc - subtotal_info) <= tolerancia_monetaria
+    subtotal_tol = _tolerancia_monetaria_efetiva(subtotal_info, tolerancia_monetaria)
+    subtotal_ok = abs(subtotal_calc - subtotal_info) <= subtotal_tol
     verificacoes.append(
         {
             "regra_id": "CALC_SUBTOTAL",
@@ -276,7 +318,8 @@ def analisar_linha_orcamento(
     if bdi_percent > 0:
         total_calc = _round_money(subtotal_info * (1 + bdi_percent / 100))
         total_info = preco_total_com_bdi if preco_total_com_bdi > 0 else total_calc
-        total_ok = abs(total_calc - total_info) <= tolerancia_monetaria
+        total_tol = _tolerancia_monetaria_efetiva(total_info, tolerancia_monetaria)
+        total_ok = abs(total_calc - total_info) <= total_tol
         verificacoes.append(
             {
                 "regra_id": "CALC_BDI",
@@ -291,18 +334,25 @@ def analisar_linha_orcamento(
                 ),
             }
         )
-        if bdi_global > 0:
-            bdi_ok = abs(bdi_percent - bdi_global) <= tolerancia_percentual
+        if bdi_global > 0 or bdis_validos:
+            bdi_ok = _linha_bdi_confere_documento(
+                bdi_percent, bdis_validos, bdi_global, tolerancia_percentual
+            )
+            if len(bdis_validos) > 1:
+                bdis_label = ", ".join(f"{b}%" for b in bdis_validos)
+                msg_ok = f"BDI {bdi_percent}% confere com os BDIs do documento ({bdis_label})."
+                msg_fail = (
+                    f"BDI da linha ({bdi_percent}%) não corresponde aos BDIs do documento ({bdis_label})."
+                )
+            else:
+                msg_ok = f"BDI {bdi_percent}% confere com o BDI predominante ({bdi_global}%)."
+                msg_fail = f"BDI da linha ({bdi_percent}%) difere do global ({bdi_global}%)."
             verificacoes.append(
                 {
                     "regra_id": "BDI_GLOBAL",
                     "status": "ok" if bdi_ok else "alerta",
                     "severidade": "info" if bdi_ok else "alerta",
-                    "mensagem": (
-                        f"BDI {bdi_percent}% confere com o BDI global ({bdi_global}%)."
-                        if bdi_ok
-                        else f"BDI da linha ({bdi_percent}%) difere do global ({bdi_global}%)."
-                    ),
+                    "mensagem": msg_ok if bdi_ok else msg_fail,
                 }
             )
 
@@ -342,10 +392,12 @@ def analisar_linhas_orcamento(
     tolerancia_percentual: float = 0.5,
 ) -> dict[str, Any]:
     bdi = bdi_global if bdi_global and bdi_global > 0 else _inferir_bdi_global(linhas)
+    bdis_validos = _inferir_bdis_validos_documento(linhas)
     resultados = [
         analisar_linha_orcamento(
             linha,
             bdi_global=bdi,
+            bdis_validos_documento=bdis_validos,
             tolerancia_monetaria=tolerancia_monetaria,
             tolerancia_percentual=tolerancia_percentual,
         )
@@ -353,9 +405,10 @@ def analisar_linhas_orcamento(
     ]
     analisadas = [r for r in resultados if r["status_geral"] != "ignorado"]
     return {
-        "versao_modelo": "1.0",
+        "versao_modelo": "1.1",
         "contexto": {
             "bdi_global_percent": bdi,
+            "bdis_validos_documento": bdis_validos,
             "tolerancia_monetaria": tolerancia_monetaria,
             "tolerancia_percentual": tolerancia_percentual,
         },

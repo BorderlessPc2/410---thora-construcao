@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user_id
 from app.domain.schemas.analise import AnalisarLinhasRequest, AnalisarLinhasResponse, executar_analise_linhas
+from app.domain.schemas.correcao_analise import CorrecaoAnaliseRequest, CorrecaoAnaliseResponse
+from app.domain.services.orcamento_correcao_ia import executar_correcao_analise_ia
 
 router = APIRouter(prefix="/api/orcamentos", tags=["analise"])
 
@@ -13,3 +15,12 @@ async def analisar_linhas_orcamento(
 ):
     """Análise determinística de linhas orçamentárias (sem IA)."""
     return executar_analise_linhas(payload)
+
+
+@router.post("/analise/correcao-ia", response_model=CorrecaoAnaliseResponse)
+async def correcao_analise_ia(
+    payload: CorrecaoAnaliseRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """Diagnostica reprovados/alertas com IA e registra aprendizados para extrações futuras."""
+    return await executar_correcao_analise_ia(user_id, payload)
