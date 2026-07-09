@@ -1,59 +1,157 @@
 import { toast } from "sonner";
-import { pingApiHealth, pingApiHealthLight, wakeApiServer } from "./api";
+import { pingApiHealthLight, wakeApiServer } from "./api";
 import { shouldEnableBackendKeepAlive } from "./backendKeepAlive";
 
-const TOAST_ID = "backend-connection";
+const TOAST_ID = "backend-connection-status";
+const POLL_WHEN_UP_MS = 30_000;
+const POLL_WHEN_DOWN_MS = 4_000;
+const FAILS_BEFORE_UNAVAILABLE = 4;
 
-let connectionPromise: Promise<boolean> | null = null;
+type BackendStatus = "idle" | "waking" | "connected" | "unavailable";
+
+let currentStatus: BackendStatus = "idle";
+let consecutiveFails = 0;
+let monitorActive = false;
+let pollTimer: number | null = null;
+let inFlight = false;
+
+function clearPollTimer(): void {
+  if (pollTimer != null) {
+    window.clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function scheduleNextPoll(delayMs: number): void {
+  clearPollTimer();
+  if (!monitorActive) return;
+  pollTimer = window.setTimeout(() => {
+    void tick();
+  }, delayMs);
+}
+
+function showStatus(status: BackendStatus): void {
+  if (status === currentStatus) return;
+  currentStatus = status;
+
+  if (status === "waking") {
+    toast.loading("Backend acordando...", {
+      id: TOAST_ID,
+      description: "Aguarde — o servidor no Render está iniciando.",
+      duration: Infinity,
+      closeButton: false,
+    });
+    return;
+  }
+
+  if (status === "connected") {
+    toast.success("Backend conectado", {
+      id: TOAST_ID,
+      description: "API online e pronta para uso.",
+      duration: Infinity,
+      closeButton: false,
+    });
+    return;
+  }
+
+  if (status === "unavailable") {
+    toast.error("Backend indisponível", {
+      id: TOAST_ID,
+      description: "Tentando reconectar automaticamente...",
+      duration: Infinity,
+      closeButton: false,
+    });
+  }
+}
+
+async function tick(): Promise<void> {
+  if (!monitorActive || inFlight) return;
+  inFlight = true;
+
+  try {
+    if (currentStatus !== "connected") {
+      wakeApiServer();
+    }
+
+    const up = await pingApiHealthLight();
+    if (!monitorActive) return;
+
+    if (up) {
+      consecutiveFails = 0;
+      showStatus("connected");
+      scheduleNextPoll(POLL_WHEN_UP_MS);
+      return;
+    }
+
+    consecutiveFails += 1;
+
+    if (consecutiveFails >= FAILS_BEFORE_UNAVAILABLE) {
+      showStatus("unavailable");
+    } else {
+      showStatus("waking");
+    }
+
+    scheduleNextPoll(POLL_WHEN_DOWN_MS);
+  } finally {
+    inFlight = false;
+  }
+}
+
+/** Inicia toast permanente de status (pós-login). Atualiza em tempo real. */
+export function startBackendStatusMonitor(): void {
+  if (!shouldEnableBackendKeepAlive()) return;
+  if (monitorActive) return;
+
+  monitorActive = true;
+  consecutiveFails = 0;
+  currentStatus = "idle";
+  showStatus("waking");
+  void tick();
+}
+
+/** Para o monitor e remove o toast (logout). */
+export function stopBackendStatusMonitor(): void {
+  monitorActive = false;
+  clearPollTimer();
+  consecutiveFails = 0;
+  currentStatus = "idle";
+  toast.dismiss(TOAST_ID);
+}
 
 /**
- * Mostra toast "Conectando..." e faz poll em /health até o Render acordar.
- * Se a API já estiver online, não mostra toast.
- * Reutiliza a mesma Promise/toast se chamado de novo durante o cold start.
+ * Usado no cold-start interceptor: garante toast de "acordando"
+ * e força um poll imediato se o monitor já estiver ativo.
  */
 export function connectBackendWithToast(): Promise<boolean> {
   if (!shouldEnableBackendKeepAlive()) {
     return Promise.resolve(true);
   }
 
-  if (connectionPromise) {
-    return connectionPromise;
+  if (!monitorActive) {
+    startBackendStatusMonitor();
+  } else if (currentStatus !== "connected") {
+    consecutiveFails = 0;
+    showStatus("waking");
+    clearPollTimer();
+    void tick();
   }
 
-  connectionPromise = (async () => {
-    wakeApiServer();
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const maxWaitMs = 90_000;
 
-    const alreadyUp = await pingApiHealthLight();
-    if (alreadyUp) {
-      return true;
-    }
+    const wait = () => {
+      if (currentStatus === "connected") {
+        resolve(true);
+        return;
+      }
+      if (!monitorActive || Date.now() - started > maxWaitMs) {
+        resolve(currentStatus === "connected");
+        return;
+      }
+      window.setTimeout(wait, 1000);
+    };
 
-    toast.loading("Conectando ao backend...", {
-      id: TOAST_ID,
-      description: "O servidor no Render pode levar até 1 minuto para acordar.",
-      duration: Infinity,
-    });
-
-    const ready = await pingApiHealth(15);
-
-    if (ready) {
-      toast.success("Backend conectado", {
-        id: TOAST_ID,
-        description: "API pronta para uso.",
-        duration: 3500,
-      });
-      return true;
-    }
-
-    toast.error("Backend indisponível", {
-      id: TOAST_ID,
-      description: "Não foi possível conectar. Tente novamente em instantes.",
-      duration: 8000,
-    });
-    return false;
-  })().finally(() => {
-    connectionPromise = null;
+    wait();
   });
-
-  return connectionPromise;
 }

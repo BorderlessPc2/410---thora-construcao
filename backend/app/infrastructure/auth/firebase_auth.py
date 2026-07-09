@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from app.config import FIREBASE_CREDENTIALS, FIREBASE_DISABLED
+from app.config import FIREBASE_CREDENTIALS, FIREBASE_DISABLED, FIREBASE_STORAGE_BUCKET
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,10 @@ def _init_firebase() -> bool:
         else:
             return False
 
-        firebase_admin.initialize_app(cred)
+        options = {"storageBucket": FIREBASE_STORAGE_BUCKET} if FIREBASE_STORAGE_BUCKET else None
+        firebase_admin.initialize_app(cred, options)
         _firebase_initialized = True
-        logger.info("Firebase Admin inicializado")
+        logger.info("Firebase Admin inicializado (bucket=%s)", FIREBASE_STORAGE_BUCKET or "default")
         return True
     except Exception as exc:
         logger.warning("Firebase Admin indisponível: %s", exc)

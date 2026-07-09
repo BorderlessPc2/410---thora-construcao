@@ -82,3 +82,7 @@ DISABLE_CAMELOT = os.getenv("DISABLE_CAMELOT", _default_disable_camelot).lower()
 
 FIREBASE_DISABLED = os.getenv("FIREBASE_DISABLED", "").lower() in {"1", "true", "yes", "on"}
 FIREBASE_CREDENTIALS = os.getenv("FIREBASE_CREDENTIALS", "")
+FIREBASE_STORAGE_BUCKET = os.getenv(
+    "FIREBASE_STORAGE_BUCKET",
+    "borderless-5a4c8.firebasestorage.app",
+).strip()

@@ -27,7 +27,7 @@ async def detect_orcamento_tables(
 ):
     upload_id = UploadStore.validate_upload_id(upload_id)
     _upload_store.assert_access(upload_id, user_id)
-    file_path = _upload_store.ensure_pdf(upload_id)
+    file_path = _upload_store.ensure_pdf(upload_id, user_id=user_id)
 
     if _table_cache.is_valid(upload_id):
         options, _ = _table_cache.get(upload_id)

@@ -1,16 +1,32 @@
 import { useEffect } from "react";
+import { useAuth } from "../features/auth/AuthContext";
 import { useBackendKeepAlive } from "../hooks/useBackendKeepAlive";
-import { connectBackendWithToast } from "../services/backendConnectionToast";
+import {
+  startBackendStatusMonitor,
+  stopBackendStatusMonitor,
+} from "../services/backendConnectionToast";
 import { shouldEnableBackendKeepAlive } from "../services/backendKeepAlive";
 
-/** Keep-alive + toast de cold start do Render na primeira carga. */
+/**
+ * Keep-alive do Render + toast permanente de status do backend após login.
+ */
 export function BackendKeepAlive() {
   useBackendKeepAlive();
+  const { user, isLoading } = useAuth();
 
   useEffect(() => {
+    if (isLoading) return;
     if (!shouldEnableBackendKeepAlive()) return;
-    void connectBackendWithToast();
-  }, []);
+
+    if (user) {
+      startBackendStatusMonitor();
+      return () => {
+        stopBackendStatusMonitor();
+      };
+    }
+
+    stopBackendStatusMonitor();
+  }, [user, isLoading]);
 
   return null;
 }

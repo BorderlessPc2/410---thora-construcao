@@ -452,7 +452,7 @@ async def process_selected_tables(
         if has_table_image:
             return b""
         if pdf_bytes is None:
-            pdf_bytes = upload_store.ensure_pdf(upload_id).read_bytes()
+            pdf_bytes = upload_store.ensure_pdf(upload_id, user_id=user_id).read_bytes()
         return pdf_bytes
 
     for table_id in table_ids:
