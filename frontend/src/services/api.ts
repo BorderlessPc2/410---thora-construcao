@@ -218,7 +218,8 @@ apiClient.interceptors.response.use(
     wakeApiServer();
     await sleep(4000 + retryCount * 4000);
     if (retryCount === 0) {
-      await pingApiHealth(12);
+      const { connectBackendWithToast } = await import("./backendConnectionToast");
+      await connectBackendWithToast();
     }
     return apiClient.request(config);
   },
@@ -271,7 +272,8 @@ export const pingApiHealthLight = async (): Promise<boolean> => {
       timeout: 20000,
       __skipColdStartRetry: true,
     } as RetryAxiosConfig);
-    return response.data?.status === "online";
+    const status = response.data?.status;
+    return status === "online" || status === "ok";
   } catch {
     return false;
   }

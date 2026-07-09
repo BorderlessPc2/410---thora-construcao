@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Inicia o backend na porta 8001 (Windows, macOS, Linux). */
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
@@ -11,7 +12,17 @@ const env = {
   ENVIRONMENT: process.env.ENVIRONMENT || "development",
 };
 
-const python = process.platform === "win32" ? "python" : "python3";
+const venvPython =
+  process.platform === "win32"
+    ? path.join(root, "venv", "Scripts", "python.exe")
+    : path.join(root, "venv", "bin", "python");
+
+const python = fs.existsSync(venvPython)
+  ? venvPython
+  : process.platform === "win32"
+    ? "python"
+    : "python3";
+
 console.log(`[backend] Thora API em http://localhost:${port}`);
 
 const child = spawn(python, ["main.py"], { cwd: root, env, stdio: "inherit" });
