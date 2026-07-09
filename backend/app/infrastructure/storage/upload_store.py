@@ -49,7 +49,6 @@ class UploadStore:
             "userId": user_id,
             "filename": filename,
             "content_type": content_type,
-            "cloudUploadStatus": "pending",
         }
         self._write_meta(upload_id, meta)
 

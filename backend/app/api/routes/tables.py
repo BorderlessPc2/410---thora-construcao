@@ -1,9 +1,10 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.deps import get_current_user_id
+from app.config import MAX_FILE_SIZE
 from app.domain.schemas.table import TableDetectResponse
 from app.domain.services.table_detection import (
     detect_table_options,
@@ -24,9 +25,44 @@ _table_cache = TableCacheStore()
 async def detect_orcamento_tables(
     upload_id: str = Form(...),
     user_id: str = Depends(get_current_user_id),
+    file: UploadFile | None = File(None),
 ):
+    """
+    Detecta tabelas no PDF.
+
+    Aceita o PDF de novo no Form (campo `file`) para ambientes com disco efêmero
+    (Render Free), sem depender de Firebase Storage / plano Blaze.
+    """
     upload_id = UploadStore.validate_upload_id(upload_id)
-    _upload_store.assert_access(upload_id, user_id)
+
+    if file is not None:
+        if file.content_type and file.content_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="Apenas arquivos PDF são permitidos")
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="Arquivo PDF vazio")
+        if len(contents) > MAX_FILE_SIZE:
+            max_mb = MAX_FILE_SIZE / 1024 / 1024
+            raise HTTPException(
+                status_code=413,
+                detail=f"Arquivo muito grande. Máximo: {max_mb:.0f}MB.",
+            )
+        filename = file.filename or f"{upload_id}.pdf"
+        _upload_store.save_pdf(
+            upload_id,
+            contents,
+            user_id=user_id,
+            filename=filename,
+            content_type=file.content_type or "application/pdf",
+        )
+        logger.info(
+            "detect-tables: PDF reenviado e salvo (%s, %.2f MB)",
+            upload_id,
+            len(contents) / 1024 / 1024,
+        )
+    else:
+        _upload_store.assert_access(upload_id, user_id)
+
     file_path = _upload_store.ensure_pdf(upload_id, user_id=user_id)
 
     if _table_cache.is_valid(upload_id):

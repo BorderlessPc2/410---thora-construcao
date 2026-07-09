@@ -391,10 +391,16 @@ export const getOrcamentoTableCandidates = async (
   }
 };
 
-/** Lista tabelas candidatas após upload (curadoria antes da IA). */
-export const detectOrcamentoTables = async (uploadId: string) => {
+/**
+ * Lista tabelas candidatas após upload (curadoria antes da IA).
+ * Reenvia o PDF quando disponível — necessário no Render Free (disco efêmero, sem Storage/Blaze).
+ */
+export const detectOrcamentoTables = async (uploadId: string, pdfFile?: File) => {
   const formData = new FormData();
   formData.append("upload_id", uploadId);
+  if (pdfFile) {
+    formData.append("file", pdfFile, pdfFile.name);
+  }
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt++) {

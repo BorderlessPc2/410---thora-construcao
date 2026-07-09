@@ -519,7 +519,7 @@ export function OrcamentoPdfWizard({
       setUploadId(currentUploadId);
 
       setPhase("detecting");
-      const detectResponse = await detectOrcamentoTables(currentUploadId);
+      const detectResponse = await detectOrcamentoTables(currentUploadId, file);
       const mappedOptions = mapTableCandidates(detectResponse.options || []);
 
       setTableOptions(mappedOptions);
