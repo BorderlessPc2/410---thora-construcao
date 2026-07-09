@@ -60,17 +60,35 @@ API_TITLE = "Thora Construção API"
 API_VERSION = "2.0.0"
 API_DESCRIPTION = "API para leitura de PDFs e orçamentos de obras"
 
-_default_detect_pages = "30" if (IS_RENDER or IS_VERCEL) else "60"
+_default_detect_pages = "10" if (IS_RENDER or IS_VERCEL) else "60"
 DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
-DETECT_TABLES_MAX_CANDIDATES = int(os.getenv("DETECT_TABLES_MAX_CANDIDATES", "40"))
-DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "2.0"))
-DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "7"))
+_default_max_candidates = "20" if (IS_RENDER or IS_VERCEL) else "40"
+DETECT_TABLES_MAX_CANDIDATES = int(
+    os.getenv("DETECT_TABLES_MAX_CANDIDATES", _default_max_candidates)
+)
+DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.25"))
+DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "8"))
+
+# Thumbnails estouram memória no Render Free — desligados por padrão em cloud.
+_default_skip_thumbs = "true" if (IS_RENDER or IS_VERCEL) else "false"
+DETECT_TABLES_SKIP_THUMBNAILS = os.getenv(
+    "DETECT_TABLES_SKIP_THUMBNAILS", _default_skip_thumbs
+).lower() in {"1", "true", "yes", "on"}
 
 # Prévia de tabelas: largura alvo em pixels (maior = zoom nítido no frontend)
-TABLE_PREVIEW_TARGET_WIDTH_PX = int(os.getenv("TABLE_PREVIEW_TARGET_WIDTH_PX", "3200"))
-TABLE_PREVIEW_MIN_SCALE = float(os.getenv("TABLE_PREVIEW_MIN_SCALE", "2.5"))
-TABLE_PREVIEW_MAX_SCALE = float(os.getenv("TABLE_PREVIEW_MAX_SCALE", "6.0"))
-TABLE_PREVIEW_PAGE_SCALE = float(os.getenv("TABLE_PREVIEW_PAGE_SCALE", "2.5"))
+_default_preview_width = "1200" if (IS_RENDER or IS_VERCEL) else "3200"
+TABLE_PREVIEW_TARGET_WIDTH_PX = int(
+    os.getenv("TABLE_PREVIEW_TARGET_WIDTH_PX", _default_preview_width)
+)
+TABLE_PREVIEW_MIN_SCALE = float(
+    os.getenv("TABLE_PREVIEW_MIN_SCALE", "1.2" if (IS_RENDER or IS_VERCEL) else "2.5")
+)
+TABLE_PREVIEW_MAX_SCALE = float(
+    os.getenv("TABLE_PREVIEW_MAX_SCALE", "2.5" if (IS_RENDER or IS_VERCEL) else "6.0")
+)
+TABLE_PREVIEW_PAGE_SCALE = float(
+    os.getenv("TABLE_PREVIEW_PAGE_SCALE", "1.2" if (IS_RENDER or IS_VERCEL) else "2.5")
+)
 
 _default_disable_camelot = "true" if (IS_RENDER or IS_VERCEL) else "false"
 DISABLE_CAMELOT = os.getenv("DISABLE_CAMELOT", _default_disable_camelot).lower() in {

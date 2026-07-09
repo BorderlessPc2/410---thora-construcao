@@ -9,6 +9,7 @@ from services.budget_scoring import score_budget_table_likelihood
 from app.config import (
     DETECT_TABLES_MAX_CANDIDATES,
     DETECT_TABLES_MAX_PAGES,
+    DETECT_TABLES_SKIP_THUMBNAILS,
     DISABLE_CAMELOT,
 )
 from app.infrastructure.pdf.camelot_extract import detect_camelot_options
@@ -106,6 +107,12 @@ def _attach_table_thumbnail(
     bbox: Any,
     page_num: int,
 ) -> None:
+    # Render Free: gerar base64 de várias páginas estoura RAM e derruba o serviço (503).
+    if DETECT_TABLES_SKIP_THUMBNAILS:
+        if bbox and len(bbox) >= 4:
+            option["coordenadas"] = [float(v) for v in bbox[:4]]
+        option["imagem_base64"] = None
+        return
     try:
         if bbox and len(bbox) >= 4:
             coords = tuple(float(v) for v in bbox[:4])

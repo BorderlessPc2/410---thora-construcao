@@ -514,6 +514,14 @@ export function OrcamentoPdfWizard({
 
     try {
       setPhase("uploading");
+      const { connectBackendWithToast } = await import("../../services/backendConnectionToast");
+      const ready = await connectBackendWithToast();
+      if (!ready) {
+        throw new Error(
+          "Servidor da API no Render está acordando ou indisponível. Aguarde o toast ficar verde (Backend conectado) e tente novamente.",
+        );
+      }
+
       const uploadResponse = await uploadPDF(file);
       const currentUploadId = uploadResponse.upload_id as string;
       setUploadId(currentUploadId);

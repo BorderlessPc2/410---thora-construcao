@@ -3,9 +3,9 @@ import { pingApiHealthLight, wakeApiServer } from "./api";
 import { shouldEnableBackendKeepAlive } from "./backendKeepAlive";
 
 const TOAST_ID = "backend-connection-status";
-const POLL_WHEN_UP_MS = 30_000;
-const POLL_WHEN_DOWN_MS = 4_000;
-const FAILS_BEFORE_UNAVAILABLE = 4;
+const POLL_WHEN_UP_MS = 45_000;
+const POLL_WHEN_DOWN_MS = 12_000;
+const FAILS_BEFORE_UNAVAILABLE = 3;
 
 type BackendStatus = "idle" | "waking" | "connected" | "unavailable";
 
@@ -69,10 +69,10 @@ async function tick(): Promise<void> {
   inFlight = true;
 
   try {
-    if (currentStatus !== "connected") {
-      wakeApiServer();
-    }
+    // Wake sem XHR (evita spam de CORS 503 no console).
+    wakeApiServer();
 
+    // Só faz XHR /health de tempos em tempos; se cair, não martela.
     const up = await pingApiHealthLight();
     if (!monitorActive) return;
 
@@ -84,13 +84,7 @@ async function tick(): Promise<void> {
     }
 
     consecutiveFails += 1;
-
-    if (consecutiveFails >= FAILS_BEFORE_UNAVAILABLE) {
-      showStatus("unavailable");
-    } else {
-      showStatus("waking");
-    }
-
+    showStatus(consecutiveFails >= FAILS_BEFORE_UNAVAILABLE ? "unavailable" : "waking");
     scheduleNextPoll(POLL_WHEN_DOWN_MS);
   } finally {
     inFlight = false;
@@ -118,9 +112,13 @@ export function stopBackendStatusMonitor(): void {
   toast.dismiss(TOAST_ID);
 }
 
+export function getBackendConnectionStatus(): BackendStatus {
+  return currentStatus;
+}
+
 /**
- * Usado no cold-start interceptor: garante toast de "acordando"
- * e força um poll imediato se o monitor já estiver ativo.
+ * Usado no cold-start interceptor / antes de uploads:
+ * garante toast de "acordando" e espera a API voltar.
  */
 export function connectBackendWithToast(): Promise<boolean> {
   if (!shouldEnableBackendKeepAlive()) {
@@ -138,7 +136,7 @@ export function connectBackendWithToast(): Promise<boolean> {
 
   return new Promise((resolve) => {
     const started = Date.now();
-    const maxWaitMs = 90_000;
+    const maxWaitMs = 120_000;
 
     const wait = () => {
       if (currentStatus === "connected") {
@@ -149,7 +147,7 @@ export function connectBackendWithToast(): Promise<boolean> {
         resolve(currentStatus === "connected");
         return;
       }
-      window.setTimeout(wait, 1000);
+      window.setTimeout(wait, 1500);
     };
 
     wait();
