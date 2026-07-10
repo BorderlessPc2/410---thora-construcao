@@ -16,9 +16,7 @@ from app.config import (
 from app.infrastructure.pdf.camelot_extract import detect_camelot_options
 from app.infrastructure.pdf.table_extract import (
     count_nonempty_rows,
-    count_pdf_pages,
     extract_tables_from_pdf,
-    extract_tables_from_single_page,
     guess_table_name_from_preview,
     preview_rows_for_api,
     preview_text_for_rows,
@@ -249,9 +247,26 @@ def _pdfplumber_detect_options(
     file_path: Path,
     min_nonempty_rows: int = 8,
     max_pages: int | None = DETECT_TABLES_MAX_PAGES,
+    on_progress: Any | None = None,
 ) -> list[dict[str, Any]]:
     try:
-        all_tables = extract_tables_from_pdf(file_path, max_pages=max_pages)
+        def _on_page(done: int, total: int, raw_count: int) -> None:
+            if on_progress is None:
+                return
+            on_progress(
+                {
+                    "pages_done": done,
+                    "pages_total": total,
+                    "raw_tables": raw_count,
+                    "message": f"Página {done}/{total} — {raw_count} tabela(s) brutas",
+                }
+            )
+
+        all_tables = extract_tables_from_pdf(
+            file_path,
+            max_pages=max_pages,
+            on_page=_on_page if on_progress is not None else None,
+        )
     except Exception as exc:
         logger.warning("pdfplumber detect: %s", exc)
         return []
@@ -262,54 +277,34 @@ def _pdfplumber_detect_options(
         built = _option_from_raw_table(table, scored_count=len(scored), min_nonempty_rows=min_nonempty_rows)
         if built:
             scored.append(built)
-    return _finalize_scored_options(file_path, scored)
 
-
-def score_page_tables(
-    file_path: Path,
-    page_index: int,
-    *,
-    scored_so_far: int = 0,
-    min_nonempty_rows: int = 8,
-) -> list[tuple[int, dict[str, Any]]]:
-    """Extrai e pontua tabelas de uma página (thread-safe para asyncio.to_thread)."""
-    t0 = __import__("time").perf_counter()
-    raw_tables = extract_tables_from_single_page(file_path, page_index)
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for table in raw_tables:
-        built = _option_from_raw_table(
-            table,
-            scored_count=scored_so_far + len(scored),
-            min_nonempty_rows=min_nonempty_rows,
+    if not scored and min_nonempty_rows > 3:
+        logger.warning(
+            "[detect] 0 candidatas com min_rows=%s — retry relaxado (min_rows=3)",
+            min_nonempty_rows,
         )
-        if built:
-            scored.append(built)
-    elapsed = __import__("time").perf_counter() - t0
-    logger.info(
-        "[detect] página %s: raw=%s scored=%s em %.2fs",
-        page_index + 1,
-        len(raw_tables),
-        len(scored),
-        elapsed,
-    )
-    gc.collect()
-    return scored
+        for table in all_tables:
+            built = _option_from_raw_table(table, scored_count=len(scored), min_nonempty_rows=3)
+            if built:
+                scored.append(built)
 
-
-def finalize_detect_options(
-    file_path: Path,
-    scored: list[tuple[int, dict[str, Any]]],
-) -> list[dict[str, Any]]:
     return _finalize_scored_options(file_path, scored)
 
 
-def get_detect_page_count(file_path: Path, max_pages: int | None = DETECT_TABLES_MAX_PAGES) -> int:
-    return count_pdf_pages(file_path, max_pages)
-
-
-def detect_table_options(file_path: Path) -> tuple[list[dict[str, Any]], bool]:
+def detect_table_options(
+    file_path: Path,
+    *,
+    on_progress: Any | None = None,
+    max_pages: int | None = DETECT_TABLES_MAX_PAGES,
+    min_nonempty_rows: int = 8,
+) -> tuple[list[dict[str, Any]], bool]:
     """Detecta candidatos: pdfplumber primeiro, Camelot como fallback."""
-    options = _pdfplumber_detect_options(file_path)
+    options = _pdfplumber_detect_options(
+        file_path,
+        min_nonempty_rows=min_nonempty_rows,
+        max_pages=max_pages,
+        on_progress=on_progress,
+    )
     if options:
         logger.info("detect-tables: %s candidato(s) via pdfplumber", len(options))
         return options, False
@@ -318,9 +313,18 @@ def detect_table_options(file_path: Path) -> tuple[list[dict[str, Any]], bool]:
         logger.warning("detect-tables: pdfplumber vazio e Camelot desativado")
         return [], False
 
-    logger.info("detect-tables: tentando Camelot (máx. %s págs)", DETECT_TABLES_MAX_PAGES)
+    logger.info("detect-tables: tentando Camelot (máx. %s págs)", max_pages or DETECT_TABLES_MAX_PAGES)
     try:
-        options = detect_camelot_options(file_path, DETECT_TABLES_MAX_PAGES)
+        if on_progress is not None:
+            on_progress(
+                {
+                    "pages_done": 0,
+                    "pages_total": max_pages or DETECT_TABLES_MAX_PAGES,
+                    "raw_tables": 0,
+                    "message": "Fallback Camelot…",
+                }
+            )
+        options = detect_camelot_options(file_path, max_pages or DETECT_TABLES_MAX_PAGES)
         for option in options:
             rows = option.get("rows") or []
             _enrich_option_metadata(option, rows)

@@ -138,6 +138,17 @@ class DetectJobStore:
             self._persist(job)
             return dict(job)
 
+    def clear(self, upload_id: str) -> None:
+        with self._lock:
+            self._jobs.pop(upload_id, None)
+            path = self._path(upload_id)
+            if path.is_file():
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        logger.info("[detect-job] cleared upload=%s", upload_id)
+
     def heartbeat(
         self,
         upload_id: str,

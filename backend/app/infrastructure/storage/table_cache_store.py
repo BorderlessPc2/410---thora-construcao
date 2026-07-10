@@ -35,6 +35,14 @@ class TableCacheStore:
             encoding="utf-8",
         )
 
+    def clear(self, upload_id: str) -> None:
+        path = self._path(upload_id)
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
     def is_valid(self, upload_id: str) -> bool:
         options, version = self.get(upload_id)
         return bool(options) and version >= DETECT_TABLES_CACHE_VERSION

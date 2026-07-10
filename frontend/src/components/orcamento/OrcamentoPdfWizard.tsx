@@ -563,11 +563,13 @@ export function OrcamentoPdfWizard({
       setSelectedAnalysisTypes(["curva_abc"]);
       if (mappedOptions.length === 0) {
         setPhase("pick_file");
-        setErrorMessage(
-          "Nenhuma tabela com dados suficientes foi encontrada. Verifique se o PDF contém planilha analítica.",
-        );
+        const detail =
+          detectResponse.message ||
+          detectResponse.error ||
+          "Nenhuma tabela com dados suficientes foi encontrada. Verifique se o PDF contém planilha analítica.";
+        setErrorMessage(detail);
         toast.error("Nenhuma tabela válida", {
-          description: "O PDF não retornou tabelas com linhas suficientes para análise.",
+          description: detail,
         });
         return;
       }

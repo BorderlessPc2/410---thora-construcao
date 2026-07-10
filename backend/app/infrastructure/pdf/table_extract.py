@@ -219,6 +219,7 @@ def extract_page_tables_with_bbox(page: Any, page_index: int) -> list[dict[str, 
 def extract_tables_from_pdf(
     file_path: Path,
     max_pages: int | None = None,
+    on_page: Any | None = None,
 ) -> list[dict[str, Any]]:
     tables: list[dict[str, Any]] = []
     with pdfplumber.open(file_path) as pdf:
@@ -247,6 +248,11 @@ def extract_tables_from_pdf(
                         "columns": len(rows[0]) if rows else 0,
                     }
                 )
+            if on_page is not None:
+                try:
+                    on_page(page_num + 1, scan_limit, len(tables))
+                except Exception as exc:
+                    logger.debug("on_page callback: %s", exc)
     return tables
 
 

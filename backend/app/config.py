@@ -61,15 +61,15 @@ API_TITLE = "Thora Construção API"
 API_VERSION = "2.0.0"
 API_DESCRIPTION = "API para leitura de PDFs e orçamentos de obras"
 
-# Cloud: páginas limitadas; detecção é página-a-página (async) para não travar o worker.
-_default_detect_pages = "20" if (IS_RENDER or IS_VERCEL) else "60"
+# Cloud: páginas suficientes para orçamentos típicos (tabelas costumam estar no início).
+_default_detect_pages = "40" if (IS_RENDER or IS_VERCEL) else "60"
 DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
-_default_max_candidates = "25" if (IS_RENDER or IS_VERCEL) else "40"
+_default_max_candidates = "30" if (IS_RENDER or IS_VERCEL) else "40"
 DETECT_TABLES_MAX_CANDIDATES = int(
     os.getenv("DETECT_TABLES_MAX_CANDIDATES", _default_max_candidates)
 )
 DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.25"))
-DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "11"))
+DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "12"))
 # Job detect travado sem heartbeat → failed (segundos)
 DETECT_JOB_STALE_SECONDS = int(os.getenv("DETECT_JOB_STALE_SECONDS", "900"))
 
