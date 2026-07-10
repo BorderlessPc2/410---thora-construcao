@@ -391,6 +391,19 @@ export type OrcamentoTableDetectResponse = {
   mock_fallback?: boolean;
   recommended_table_ids?: string[];
   cached?: boolean;
+  pages_total?: number;
+  pages_done?: number;
+  candidates_found?: number;
+  message?: string;
+  error?: string;
+};
+
+export type DetectTablesProgress = {
+  status: string;
+  pages_total: number;
+  pages_done: number;
+  candidates_found: number;
+  message?: string;
 };
 
 /** Retorna tabelas já detectadas (cache no backend) — rápido, sem reprocessar o PDF. */
@@ -409,11 +422,22 @@ export const getOrcamentoTableCandidates = async (
 };
 
 /**
- * Lista tabelas candidatas após upload (curadoria antes da IA).
- * Reenvia o PDF quando disponível — necessário no Render Free (disco efêmero, sem Storage/Blaze).
- * Sem retry em cascata: 502/OOM no meio do detect piora se reenviar o PDF várias vezes.
+ * Detecta tabelas de forma assíncrona (job + polling).
+ * Reenvia o PDF no start — necessário no Render Free (disco efêmero).
+ * Cada poll também acorda o backend (evita sleep durante a detecção).
  */
-export const detectOrcamentoTables = async (uploadId: string, pdfFile?: File) => {
+export const detectOrcamentoTables = async (
+  uploadId: string,
+  pdfFile?: File,
+  options?: {
+    onProgress?: (update: DetectTablesProgress) => void;
+    pollIntervalMs?: number;
+    maxWaitMs?: number;
+  },
+): Promise<OrcamentoTableDetectResponse> => {
+  const pollIntervalMs = options?.pollIntervalMs ?? 2000;
+  const maxWaitMs = options?.maxWaitMs ?? 12 * 60 * 1000;
+
   const formData = new FormData();
   formData.append("upload_id", uploadId);
   if (pdfFile) {
@@ -421,39 +445,133 @@ export const detectOrcamentoTables = async (uploadId: string, pdfFile?: File) =>
   }
 
   console.info(
-    `[api] detect-tables início upload_id=${uploadId} file=${pdfFile?.name ?? "cache"}`,
+    `[api] detect-tables START upload_id=${uploadId} file=${pdfFile?.name ?? "cache"}`,
   );
   const started = Date.now();
 
+  let startData: OrcamentoTableDetectResponse;
   try {
     const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
       headers: { "Content-Type": "multipart/form-data" },
-      timeout: 300000,
+      timeout: 120000,
       __skipColdStartRetry: true,
     } as RetryAxiosConfig);
-    const data = response.data as OrcamentoTableDetectResponse;
-    console.info(
-      `[api] detect-tables OK em ${((Date.now() - started) / 1000).toFixed(1)}s → ${data.tables_found} tabela(s) cached=${Boolean(data.cached)}`,
-    );
-    return data;
+    startData = response.data as OrcamentoTableDetectResponse;
   } catch (error: unknown) {
     const err = error as { response?: { status?: number; data?: { detail?: unknown } }; code?: string };
     console.error(
-      `[api] detect-tables falhou em ${((Date.now() - started) / 1000).toFixed(1)}s status=${err?.response?.status} code=${err?.code}`,
+      `[api] detect-tables START falhou em ${((Date.now() - started) / 1000).toFixed(1)}s status=${err?.response?.status}`,
       err?.response?.data?.detail ?? error,
     );
+    throw new Error(parseApiError(error, "Erro ao iniciar detecção de tabelas"));
+  }
 
-    const detail = err.response?.data?.detail;
-    const msg =
-      typeof detail === "string"
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
-          : parseApiError(
-              error,
-              "Erro ao detectar tabelas. O servidor pode ter ficado sem memória ao processar o PDF — aguarde o backend voltar e tente novamente (sem spam de retries).",
-            );
-    throw new Error(msg || "Erro ao detectar tabelas");
+  console.info(
+    `[api] detect-tables START ok status=${startData.status} tables=${startData.tables_found} msg=${startData.message ?? ""}`,
+  );
+
+  if (startData.status === "success") {
+    options?.onProgress?.({
+      status: "success",
+      pages_total: startData.pages_total ?? 0,
+      pages_done: startData.pages_done ?? startData.pages_total ?? 0,
+      candidates_found: startData.tables_found ?? startData.options?.length ?? 0,
+      message: startData.message,
+    });
+    return startData;
+  }
+
+  if (startData.status === "failed") {
+    throw new Error(startData.error || startData.message || "Detecção de tabelas falhou");
+  }
+
+  if (startData.status !== "processing" && startData.status !== "queued") {
+    // Resposta legada sync
+    return startData;
+  }
+
+  options?.onProgress?.({
+    status: startData.status,
+    pages_total: startData.pages_total ?? 0,
+    pages_done: startData.pages_done ?? 0,
+    candidates_found: startData.candidates_found ?? 0,
+    message: startData.message ?? "Detectando tabelas…",
+  });
+
+  for (;;) {
+    if (Date.now() - started > maxWaitMs) {
+      throw new Error(
+        "Detecção excedeu o tempo máximo. O PDF pode ser grande demais para o plano gratuito — tente novamente ou use um arquivo menor.",
+      );
+    }
+
+    await sleep(pollIntervalMs);
+    wakeApiServer();
+
+    try {
+      const statusResponse = await apiClient.get(
+        `/api/orcamentos/detect-tables/status/${uploadId}`,
+        {
+          timeout: 30000,
+          __skipColdStartRetry: true,
+        } as RetryAxiosConfig,
+      );
+      const statusData = statusResponse.data as OrcamentoTableDetectResponse;
+      console.info(
+        `[api] detect-status ${statusData.status} pages=${statusData.pages_done ?? 0}/${statusData.pages_total ?? 0} candidatas=${statusData.candidates_found ?? 0}`,
+      );
+
+      options?.onProgress?.({
+        status: statusData.status,
+        pages_total: statusData.pages_total ?? 0,
+        pages_done: statusData.pages_done ?? 0,
+        candidates_found: statusData.candidates_found ?? 0,
+        message: statusData.message,
+      });
+
+      if (statusData.status === "processing" || statusData.status === "queued") {
+        continue;
+      }
+
+      if (statusData.status === "success" || statusData.status === "completed") {
+        console.info(
+          `[api] detect-tables OK em ${((Date.now() - started) / 1000).toFixed(1)}s → ${statusData.tables_found} tabela(s)`,
+        );
+        return { ...statusData, status: "success" };
+      }
+
+      if (statusData.status === "failed") {
+        throw new Error(
+          statusData.error || statusData.message || "Detecção de tabelas falhou no servidor",
+        );
+      }
+
+      return statusData;
+    } catch (error: unknown) {
+      if (error instanceof Error && !(error as { response?: unknown }).response) {
+        // Erro de negócio (failed/timeout) — não retentar
+        const msg = error.message;
+        if (
+          msg.includes("falhou") ||
+          msg.includes("excedeu") ||
+          msg.includes("Detecção")
+        ) {
+          throw error;
+        }
+      }
+      const err = error as { response?: { status?: number }; message?: string };
+      console.warn(
+        `[api] detect-status poll falhou status=${err.response?.status} — retentando`,
+      );
+      if (isRenderColdStartError(error)) {
+        continue;
+      }
+      // Network blip: continua polling por um tempo
+      if (!err.response) {
+        continue;
+      }
+      throw new Error(parseApiError(error, "Erro ao consultar status da detecção"));
+    }
   }
 };
 

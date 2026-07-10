@@ -21,8 +21,14 @@ class TableCandidatePublic(BaseModel):
 class TableDetectResponse(BaseModel):
     status: str = "success"
     upload_id: str
-    tables_found: int
-    options: list[dict[str, Any]]
+    tables_found: int = 0
+    options: list[dict[str, Any]] = Field(default_factory=list)
     mock_fallback: bool = False
     cached: bool = False
     recommended_table_ids: list[str] = Field(default_factory=list)
+    # Campos de job assíncrono (quando status=processing)
+    pages_total: int = 0
+    pages_done: int = 0
+    candidates_found: int = 0
+    message: str | None = None
+    error: str | None = None

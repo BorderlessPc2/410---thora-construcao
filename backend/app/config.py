@@ -20,8 +20,9 @@ RUNTIME_BASE_DIR = Path("/tmp/thora") if (IS_VERCEL or IS_RENDER) else BASE_DIR 
 UPLOAD_DIR = RUNTIME_BASE_DIR / "uploads"
 CACHE_DIR = RUNTIME_BASE_DIR / "cache"
 TEMP_DIR = RUNTIME_BASE_DIR / "temp"
+JOBS_DIR = RUNTIME_BASE_DIR / "jobs"
 
-for folder in (UPLOAD_DIR, CACHE_DIR, TEMP_DIR):
+for folder in (UPLOAD_DIR, CACHE_DIR, TEMP_DIR, JOBS_DIR):
     folder.mkdir(parents=True, exist_ok=True)
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
@@ -60,15 +61,17 @@ API_TITLE = "Thora Construção API"
 API_VERSION = "2.0.0"
 API_DESCRIPTION = "API para leitura de PDFs e orçamentos de obras"
 
-# Cloud: menos páginas que local, mas o suficiente para orçamentos típicos.
-_default_detect_pages = "25" if (IS_RENDER or IS_VERCEL) else "60"
+# Cloud: páginas limitadas; detecção é página-a-página (async) para não travar o worker.
+_default_detect_pages = "20" if (IS_RENDER or IS_VERCEL) else "60"
 DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
 _default_max_candidates = "25" if (IS_RENDER or IS_VERCEL) else "40"
 DETECT_TABLES_MAX_CANDIDATES = int(
     os.getenv("DETECT_TABLES_MAX_CANDIDATES", _default_max_candidates)
 )
 DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.25"))
-DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "10"))
+DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "11"))
+# Job detect travado sem heartbeat → failed (segundos)
+DETECT_JOB_STALE_SECONDS = int(os.getenv("DETECT_JOB_STALE_SECONDS", "900"))
 
 # Render Free: miniaturas estouram RAM → 503 → frontend retenta em loop.
 # Preview usa preview_rows (HTML) no frontend quando imagem_base64 é null.

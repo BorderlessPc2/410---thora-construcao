@@ -517,6 +517,8 @@ export function OrcamentoPdfWizard({
 
     try {
       setPhase("uploading");
+      setProcessingDetail("");
+      setProgressPercent(0);
       const ready = await connectBackendWithToast();
       if (!ready) {
         throw new Error(
@@ -524,18 +526,37 @@ export function OrcamentoPdfWizard({
         );
       }
 
-      pauseBackendStatusMonitor("upload+detect");
+      // Pausa só no upload curto; na detecção o polling mantém o backend acordado.
+      pauseBackendStatusMonitor("upload");
       console.info("[wizard] etapa upload…");
       const uploadResponse = await uploadPDF(file);
       const currentUploadId = uploadResponse.upload_id as string;
       setUploadId(currentUploadId);
       console.info(`[wizard] upload ok → ${currentUploadId}`);
+      resumeBackendStatusMonitor();
 
       setPhase("detecting");
-      console.info("[wizard] etapa detect-tables…");
-      const detectResponse = await detectOrcamentoTables(currentUploadId, file);
+      setProcessingDetail("Iniciando detecção página a página…");
+      setProgressPercent(5);
+      console.info("[wizard] etapa detect-tables (async)…");
+      const detectResponse = await detectOrcamentoTables(currentUploadId, file, {
+        onProgress: (update) => {
+          const total = Math.max(update.pages_total || 0, 1);
+          const done = update.pages_done || 0;
+          const pct = Math.min(95, Math.round((done / total) * 100));
+          setProgressPercent(pct > 0 ? pct : 8);
+          setProcessingDetail(
+            update.message ||
+              `Página ${done}/${update.pages_total || "?"} — ${update.candidates_found || 0} candidata(s)`,
+          );
+        },
+      });
       const mappedOptions = mapTableCandidates(detectResponse.options || []);
       console.info(`[wizard] detect ok → ${mappedOptions.length} tabela(s)`);
+      setProgressPercent(100);
+      setProcessingDetail(
+        detectResponse.message || `${mappedOptions.length} tabela(s) detectada(s)`,
+      );
 
       setTableOptions(mappedOptions);
       setSelectedTableIds([]);
@@ -766,13 +787,28 @@ export function OrcamentoPdfWizard({
                       <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
                       {phase === "uploading" ? "Enviando arquivo…" : "Detectando tabelas…"}
                     </div>
+                    {phase === "detecting" && processingDetail ? (
+                      <p className="mb-2 text-xs text-slate-500">{processingDetail}</p>
+                    ) : null}
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
                       <div
-                        className={`h-full rounded-full bg-blue-600 ${
-                          phase === "uploading" ? "w-1/3 animate-pulse" : "w-2/3 animate-pulse"
+                        className={`h-full rounded-full bg-blue-600 transition-all duration-500 ${
+                          phase === "uploading"
+                            ? "w-1/3 animate-pulse"
+                            : progressPercent > 0
+                              ? ""
+                              : "w-2/3 animate-pulse"
                         }`}
+                        style={
+                          phase === "detecting" && progressPercent > 0
+                            ? { width: `${Math.max(progressPercent, 3)}%` }
+                            : undefined
+                        }
                       />
                     </div>
+                    {phase === "detecting" && progressPercent > 0 ? (
+                      <p className="mt-1 text-right text-xs text-slate-400">{progressPercent}%</p>
+                    ) : null}
                   </div>
                 )}
 

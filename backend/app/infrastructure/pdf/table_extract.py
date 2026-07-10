@@ -250,6 +250,45 @@ def extract_tables_from_pdf(
     return tables
 
 
+def count_pdf_pages(file_path: Path, max_pages: int | None = None) -> int:
+    """Retorna quantas páginas serão analisadas (respeitando limite)."""
+    with pdfplumber.open(file_path) as pdf:
+        total = len(pdf.pages)
+    if max_pages is None:
+        return total
+    return min(total, max_pages)
+
+
+def extract_tables_from_single_page(
+    file_path: Path,
+    page_index: int,
+) -> list[dict[str, Any]]:
+    """
+    Extrai tabelas de UMA página abrindo/fechando o PDF.
+    Mais lento, mas reduz pico de RAM no Render Free.
+    """
+    tables: list[dict[str, Any]] = []
+    with pdfplumber.open(file_path) as pdf:
+        if page_index < 0 or page_index >= len(pdf.pages):
+            return []
+        page = pdf.pages[page_index]
+        page_tables = extract_page_tables_with_bbox(page, page_index)
+        for entry in page_tables:
+            rows = entry.get("rows") or []
+            tables.append(
+                {
+                    "page": page_index + 1,
+                    "table_id": entry.get("table_id") or f"page_{page_index}_table_0",
+                    "rows": rows,
+                    "bbox": entry.get("bbox"),
+                    "section_name": entry.get("section_name"),
+                    "original_rows": len(rows),
+                    "columns": len(rows[0]) if rows else 0,
+                }
+            )
+    return tables
+
+
 def guess_table_name_from_preview(preview_text: str, fallback_index: int) -> str:
     text = preview_text.lower()
     if "orçamento sintético" in text or "orcamento sintetico" in text:

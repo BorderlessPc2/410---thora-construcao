@@ -10,7 +10,7 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: DETECT_TABLES_MAX_PAGES
-        value: "25"
+        value: "20"
       - key: DETECT_TABLES_MAX_CANDIDATES
         value: "25"
       - key: DETECT_TABLES_SKIP_THUMBNAILS

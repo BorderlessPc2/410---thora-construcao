@@ -16,7 +16,9 @@ from app.config import (
 from app.infrastructure.pdf.camelot_extract import detect_camelot_options
 from app.infrastructure.pdf.table_extract import (
     count_nonempty_rows,
+    count_pdf_pages,
     extract_tables_from_pdf,
+    extract_tables_from_single_page,
     guess_table_name_from_preview,
     preview_rows_for_api,
     preview_text_for_rows,
@@ -168,55 +170,52 @@ def _enrich_option_metadata(option: dict[str, Any], rows: list[list[Any]]) -> No
     option["preview_rows"] = preview_rows_for_api(rows)
 
 
-def _pdfplumber_detect_options(
-    file_path: Path,
+def _option_from_raw_table(
+    table: dict[str, Any],
+    *,
+    scored_count: int,
     min_nonempty_rows: int = 8,
-    max_pages: int | None = DETECT_TABLES_MAX_PAGES,
+) -> tuple[int, dict[str, Any]] | None:
+    rows = table.get("rows") or []
+    nonempty = count_nonempty_rows(rows)
+    budget_score = score_budget_table_likelihood(rows)
+    min_rows_required = 4 if budget_score >= 35 else min_nonempty_rows
+    if nonempty < min_rows_required:
+        return None
+    page_num = int(table.get("page") or 1)
+    table_id = str(table.get("table_id") or f"page_{page_num}_table_0")
+    table_idx = _table_index_on_page(table_id, page_num)
+    preview = preview_text_for_rows(rows)
+    section_name = str(table.get("section_name") or "").strip()
+    if section_name:
+        name = section_name[:72]
+    else:
+        name = guess_table_name_from_preview(preview, scored_count + 1)
+    option: dict[str, Any] = {
+        "id": table_id,
+        "pagina": page_num,
+        "num_pagina": page_num,
+        "nome_tabela": f"{name} (Pág {page_num}, tabela {table_idx}, {nonempty} linhas)",
+        "preview_texto": preview,
+        "coordenadas": None,
+        "source": "pdfplumber",
+        "row_count": nonempty,
+        "budget_score": budget_score,
+        "is_budget_likely": budget_score >= BUDGET_LIKELY_MIN_SCORE,
+        "preview_rows": preview_rows_for_api(rows),
+        "rows": rows,
+        "bbox": table.get("bbox"),
+        "imagem_base64": None,
+    }
+    if table.get("bbox") and len(table["bbox"]) >= 4:
+        option["coordenadas"] = [float(v) for v in table["bbox"][:4]]
+    return budget_score, option
+
+
+def _finalize_scored_options(
+    file_path: Path,
+    scored: list[tuple[int, dict[str, Any]]],
 ) -> list[dict[str, Any]]:
-    try:
-        all_tables = extract_tables_from_pdf(file_path, max_pages=max_pages)
-    except Exception as exc:
-        logger.warning("pdfplumber detect: %s", exc)
-        return []
-
-    scored: list[tuple[int, dict[str, Any]]] = []
-    logger.info("[detect] pdfplumber: avaliando %s tabela(s) brutas…", len(all_tables))
-    for table in all_tables:
-        rows = table.get("rows") or []
-        nonempty = count_nonempty_rows(rows)
-        budget_score = score_budget_table_likelihood(rows)
-        min_rows_required = 4 if budget_score >= 35 else min_nonempty_rows
-        if nonempty < min_rows_required:
-            continue
-        page_num = int(table.get("page") or 1)
-        table_id = str(table.get("table_id") or f"page_{page_num}_table_0")
-        table_idx = _table_index_on_page(table_id, page_num)
-        preview = preview_text_for_rows(rows)
-        section_name = str(table.get("section_name") or "").strip()
-        if section_name:
-            name = section_name[:72]
-        else:
-            name = guess_table_name_from_preview(preview, len(scored) + 1)
-        option: dict[str, Any] = {
-            "id": table_id,
-            "pagina": page_num,
-            "num_pagina": page_num,
-            "nome_tabela": f"{name} (Pág {page_num}, tabela {table_idx}, {nonempty} linhas)",
-            "preview_texto": preview,
-            "coordenadas": None,
-            "source": "pdfplumber",
-            "row_count": nonempty,
-            "budget_score": budget_score,
-            "is_budget_likely": budget_score >= BUDGET_LIKELY_MIN_SCORE,
-            "preview_rows": preview_rows_for_api(rows),
-            "rows": rows,
-            "bbox": table.get("bbox"),
-            "imagem_base64": None,
-        }
-        if table.get("bbox") and len(table["bbox"]) >= 4:
-            option["coordenadas"] = [float(v) for v in table["bbox"][:4]]
-        scored.append((budget_score, option))
-
     likely = [entry for score, entry in scored if score >= BUDGET_LIKELY_MIN_SCORE]
     fallback_limit = min(40, DETECT_TABLES_MAX_CANDIDATES)
     pool = likely if likely else [entry for _, entry in sorted(scored, key=lambda x: -x[0])[:fallback_limit]]
@@ -238,12 +237,74 @@ def _pdfplumber_detect_options(
     )
     _attach_thumbnails_for_final_options(file_path, options)
     logger.info(
-        "[detect] pdfplumber final: %s opção(ões) (scored=%s likely=%s)",
+        "[detect] final: %s opção(ões) (scored=%s likely=%s)",
         len(options),
         len(scored),
         len(likely),
     )
     return options
+
+
+def _pdfplumber_detect_options(
+    file_path: Path,
+    min_nonempty_rows: int = 8,
+    max_pages: int | None = DETECT_TABLES_MAX_PAGES,
+) -> list[dict[str, Any]]:
+    try:
+        all_tables = extract_tables_from_pdf(file_path, max_pages=max_pages)
+    except Exception as exc:
+        logger.warning("pdfplumber detect: %s", exc)
+        return []
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    logger.info("[detect] pdfplumber: avaliando %s tabela(s) brutas…", len(all_tables))
+    for table in all_tables:
+        built = _option_from_raw_table(table, scored_count=len(scored), min_nonempty_rows=min_nonempty_rows)
+        if built:
+            scored.append(built)
+    return _finalize_scored_options(file_path, scored)
+
+
+def score_page_tables(
+    file_path: Path,
+    page_index: int,
+    *,
+    scored_so_far: int = 0,
+    min_nonempty_rows: int = 8,
+) -> list[tuple[int, dict[str, Any]]]:
+    """Extrai e pontua tabelas de uma página (thread-safe para asyncio.to_thread)."""
+    t0 = __import__("time").perf_counter()
+    raw_tables = extract_tables_from_single_page(file_path, page_index)
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for table in raw_tables:
+        built = _option_from_raw_table(
+            table,
+            scored_count=scored_so_far + len(scored),
+            min_nonempty_rows=min_nonempty_rows,
+        )
+        if built:
+            scored.append(built)
+    elapsed = __import__("time").perf_counter() - t0
+    logger.info(
+        "[detect] página %s: raw=%s scored=%s em %.2fs",
+        page_index + 1,
+        len(raw_tables),
+        len(scored),
+        elapsed,
+    )
+    gc.collect()
+    return scored
+
+
+def finalize_detect_options(
+    file_path: Path,
+    scored: list[tuple[int, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    return _finalize_scored_options(file_path, scored)
+
+
+def get_detect_page_count(file_path: Path, max_pages: int | None = DETECT_TABLES_MAX_PAGES) -> int:
+    return count_pdf_pages(file_path, max_pages)
 
 
 def detect_table_options(file_path: Path) -> tuple[list[dict[str, Any]], bool]:
