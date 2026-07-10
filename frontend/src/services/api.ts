@@ -670,6 +670,10 @@ export const processOrcamentoTables = async (
   tableIds: string[],
   analysisTypes: string[] = ["curva_abc"],
 ) => {
+  console.info(
+    `[api] process-tables início upload=${uploadId} tables=${tableIds.length} tipos=${analysisTypes.join(",")}`,
+  );
+  const started = Date.now();
   try {
     const response = await apiClient.post(
       "/api/orcamentos/process-tables",
@@ -678,7 +682,10 @@ export const processOrcamentoTables = async (
         table_ids: tableIds,
         analysis_types: analysisTypes,
       },
-      { timeout: 120000 },
+      { timeout: 300000, __skipColdStartRetry: true } as RetryAxiosConfig,
+    );
+    console.info(
+      `[api] process-tables OK em ${((Date.now() - started) / 1000).toFixed(1)}s itens=${response.data?.items_found}`,
     );
     return response.data as {
       status: string;
@@ -696,6 +703,10 @@ export const processOrcamentoTables = async (
       message: string;
     };
   } catch (error: unknown) {
+    console.error(
+      `[api] process-tables falhou em ${((Date.now() - started) / 1000).toFixed(1)}s`,
+      error,
+    );
     const err = error as { response?: { data?: { detail?: unknown } } };
     const detail = err.response?.data?.detail;
     const msg =
