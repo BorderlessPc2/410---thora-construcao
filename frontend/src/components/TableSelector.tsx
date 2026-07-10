@@ -417,6 +417,35 @@ export const TableSelector: React.FC<TableSelectorProps> = ({
                   onResetZoom={resetZoom}
                 />
               </>
+            ) : currentTable.preview_rows && currentTable.preview_rows.length > 0 ? (
+              <div className="max-h-[min(28rem,55vh)] overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+                <table className="min-w-full border-collapse text-left text-xs text-slate-700">
+                  <tbody>
+                    {currentTable.preview_rows.map((row, rowIdx) => (
+                      <tr
+                        key={`preview-row-${rowIdx}`}
+                        className={
+                          rowIdx === 0
+                            ? "bg-slate-100 font-semibold text-slate-800"
+                            : rowIdx % 2 === 0
+                              ? "bg-white"
+                              : "bg-slate-50"
+                        }
+                      >
+                        {row.map((cell, cellIdx) => (
+                          <td
+                            key={`preview-cell-${rowIdx}-${cellIdx}`}
+                            className="max-w-[14rem] truncate border border-slate-200 px-2 py-1.5"
+                            title={cell}
+                          >
+                            {cell || "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             ) : (
               <div className="flex min-h-[min(20rem,40vh)] items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
                 <p>{currentTable.preview || "Imagem indisponível para esta planilha."}</p>

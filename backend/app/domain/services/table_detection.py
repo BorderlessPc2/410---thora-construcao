@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,16 @@ def _attach_table_thumbnail(
     except Exception as exc:
         logger.warning("thumbnail tabela pág %s: %s", page_num, exc)
         option["imagem_base64"] = None
+    finally:
+        gc.collect()
+
+
+def _attach_thumbnails_for_final_options(file_path: Path, options: list[dict[str, Any]]) -> None:
+    """Gera miniaturas só dos candidatos finais (evita OOM no loop de scoring)."""
+    for option in options:
+        page_num = int(option.get("pagina") or option.get("num_pagina") or 1)
+        bbox = option.get("bbox") or option.get("coordenadas")
+        _attach_table_thumbnail(file_path, option, bbox, page_num)
 
 
 def _enrich_option_metadata(option: dict[str, Any], rows: list[list[Any]]) -> None:
@@ -179,8 +190,10 @@ def _pdfplumber_detect_options(
             "preview_rows": preview_rows_for_api(rows),
             "rows": rows,
             "bbox": table.get("bbox"),
+            "imagem_base64": None,
         }
-        _attach_table_thumbnail(file_path, option, table.get("bbox"), page_num)
+        if table.get("bbox") and len(table["bbox"]) >= 4:
+            option["coordenadas"] = [float(v) for v in table["bbox"][:4]]
         scored.append((budget_score, option))
 
     likely = [entry for score, entry in scored if score >= BUDGET_LIKELY_MIN_SCORE]
@@ -202,6 +215,7 @@ def _pdfplumber_detect_options(
             -int(o.get("row_count") or 0),
         )
     )
+    _attach_thumbnails_for_final_options(file_path, options)
     return options
 
 
@@ -223,6 +237,9 @@ def detect_table_options(file_path: Path) -> tuple[list[dict[str, Any]], bool]:
             rows = option.get("rows") or []
             _enrich_option_metadata(option, rows)
         options = _dedupe_near_duplicates([(int(o.get("budget_score") or 0), o) for o in options])
+        if len(options) > DETECT_TABLES_MAX_CANDIDATES:
+            options = options[:DETECT_TABLES_MAX_CANDIDATES]
+        _attach_thumbnails_for_final_options(file_path, options)
     except Exception as exc:
         logger.warning("detect-tables: Camelot falhou: %s", exc)
         options = []

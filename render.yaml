@@ -10,7 +10,13 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: DETECT_TABLES_MAX_PAGES
-        value: "10"
+        value: "35"
+      - key: DETECT_TABLES_MAX_CANDIDATES
+        value: "30"
+      - key: DETECT_TABLES_SKIP_THUMBNAILS
+        value: "false"
+      - key: TABLE_PREVIEW_TARGET_WIDTH_PX
+        value: "900"
       - key: DISABLE_CAMELOT
         value: "true"
       - key: USE_CELERY_QUEUE
