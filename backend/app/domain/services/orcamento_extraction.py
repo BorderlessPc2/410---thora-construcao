@@ -418,6 +418,13 @@ async def process_selected_tables(
             ),
         )
 
+    logger.info(
+        "[process_selected] INÍCIO upload=%s tables=%s tipos=%s",
+        upload_id,
+        table_ids,
+        analysis_types,
+    )
+
     upload_store = UploadStore()
     upload_id = UploadStore.validate_upload_id(upload_id)
     upload_store.assert_access(upload_id, user_id)
@@ -428,10 +435,12 @@ async def process_selected_tables(
     cache = TableCacheStore()
     options, _ = cache.get(upload_id)
     if not options:
+        logger.warning("[process_selected] cache vazio upload=%s", upload_id)
         raise HTTPException(
             status_code=409,
             detail="Nenhuma tabela em cache. Volte e detecte as tabelas novamente.",
         )
+    logger.info("[process_selected] cache com %s opção(ões)", len(options))
 
     by_id = {str(o.get("id")): o for o in options if o.get("id")}
     unknown = [t for t in table_ids if t not in by_id]
@@ -457,6 +466,12 @@ async def process_selected_tables(
 
     for table_id in table_ids:
         candidate = by_id[table_id]
+        logger.info(
+            "[process_selected] tabela %s pág=%s score=%s",
+            table_id,
+            candidate.get("pagina") or candidate.get("num_pagina"),
+            candidate.get("budget_score"),
+        )
         rows = _resolve_rows(candidate)
         page = _candidate_page(candidate)
         candidate_name = str(candidate.get("nome_tabela") or "")

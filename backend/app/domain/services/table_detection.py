@@ -133,9 +133,29 @@ def _attach_table_thumbnail(
 
 def _attach_thumbnails_for_final_options(file_path: Path, options: list[dict[str, Any]]) -> None:
     """Gera miniaturas só dos candidatos finais (evita OOM no loop de scoring)."""
-    for option in options:
+    if DETECT_TABLES_SKIP_THUMBNAILS:
+        logger.info(
+            "[detect] skip thumbnails (%s candidato(s)) — preview via preview_rows",
+            len(options),
+        )
+        for option in options:
+            bbox = option.get("bbox") or option.get("coordenadas")
+            if bbox and len(bbox) >= 4:
+                option["coordenadas"] = [float(v) for v in bbox[:4]]
+            option["imagem_base64"] = None
+        return
+
+    logger.info("[detect] gerando thumbnails para %s candidato(s)…", len(options))
+    for idx, option in enumerate(options, start=1):
         page_num = int(option.get("pagina") or option.get("num_pagina") or 1)
         bbox = option.get("bbox") or option.get("coordenadas")
+        logger.info(
+            "[detect] thumbnail %s/%s id=%s pág=%s",
+            idx,
+            len(options),
+            option.get("id"),
+            page_num,
+        )
         _attach_table_thumbnail(file_path, option, bbox, page_num)
 
 
@@ -160,6 +180,7 @@ def _pdfplumber_detect_options(
         return []
 
     scored: list[tuple[int, dict[str, Any]]] = []
+    logger.info("[detect] pdfplumber: avaliando %s tabela(s) brutas…", len(all_tables))
     for table in all_tables:
         rows = table.get("rows") or []
         nonempty = count_nonempty_rows(rows)
@@ -216,6 +237,12 @@ def _pdfplumber_detect_options(
         )
     )
     _attach_thumbnails_for_final_options(file_path, options)
+    logger.info(
+        "[detect] pdfplumber final: %s opção(ões) (scored=%s likely=%s)",
+        len(options),
+        len(scored),
+        len(likely),
+    )
     return options
 
 

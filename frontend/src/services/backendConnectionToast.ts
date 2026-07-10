@@ -3,8 +3,8 @@ import { pingApiHealthLight, wakeApiServer } from "./api";
 import { shouldEnableBackendKeepAlive } from "./backendKeepAlive";
 
 const TOAST_ID = "backend-connection-status";
-const POLL_WHEN_UP_MS = 45_000;
-const POLL_WHEN_DOWN_MS = 12_000;
+const POLL_WHEN_UP_MS = 90_000;
+const POLL_WHEN_DOWN_MS = 20_000;
 const FAILS_BEFORE_UNAVAILABLE = 3;
 
 type BackendStatus = "idle" | "waking" | "connected" | "unavailable";
@@ -14,6 +14,8 @@ let consecutiveFails = 0;
 let monitorActive = false;
 let pollTimer: number | null = null;
 let inFlight = false;
+/** Durante upload/detect/process: não martelar /health. */
+let heavyWorkPaused = false;
 
 function clearPollTimer(): void {
   if (pollTimer != null) {
@@ -24,7 +26,7 @@ function clearPollTimer(): void {
 
 function scheduleNextPoll(delayMs: number): void {
   clearPollTimer();
-  if (!monitorActive) return;
+  if (!monitorActive || heavyWorkPaused) return;
   pollTimer = window.setTimeout(() => {
     void tick();
   }, delayMs);
@@ -65,16 +67,13 @@ function showStatus(status: BackendStatus): void {
 }
 
 async function tick(): Promise<void> {
-  if (!monitorActive || inFlight) return;
+  if (!monitorActive || inFlight || heavyWorkPaused) return;
   inFlight = true;
 
   try {
-    // Wake sem XHR (evita spam de CORS 503 no console).
     wakeApiServer();
-
-    // Só faz XHR /health de tempos em tempos; se cair, não martela.
     const up = await pingApiHealthLight();
-    if (!monitorActive) return;
+    if (!monitorActive || heavyWorkPaused) return;
 
     if (up) {
       consecutiveFails = 0;
@@ -88,6 +87,23 @@ async function tick(): Promise<void> {
     scheduleNextPoll(POLL_WHEN_DOWN_MS);
   } finally {
     inFlight = false;
+  }
+}
+
+/** Pausa pings de status enquanto o backend processa PDF/IA (evita loop 502). */
+export function pauseBackendStatusMonitor(reason = "heavy-work"): void {
+  heavyWorkPaused = true;
+  clearPollTimer();
+  console.info(`[backend-toast] monitor pausado (${reason})`);
+}
+
+/** Retoma pings após upload/detect/process. */
+export function resumeBackendStatusMonitor(): void {
+  if (!heavyWorkPaused) return;
+  heavyWorkPaused = false;
+  console.info("[backend-toast] monitor retomado");
+  if (monitorActive) {
+    scheduleNextPoll(POLL_WHEN_UP_MS);
   }
 }
 
@@ -106,6 +122,7 @@ export function startBackendStatusMonitor(): void {
 /** Para o monitor e remove o toast (logout). */
 export function stopBackendStatusMonitor(): void {
   monitorActive = false;
+  heavyWorkPaused = false;
   clearPollTimer();
   consecutiveFails = 0;
   currentStatus = "idle";
@@ -131,7 +148,9 @@ export function connectBackendWithToast(): Promise<boolean> {
     consecutiveFails = 0;
     showStatus("waking");
     clearPollTimer();
-    void tick();
+    if (!heavyWorkPaused) {
+      void tick();
+    }
   }
 
   return new Promise((resolve) => {

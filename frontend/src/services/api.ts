@@ -98,27 +98,32 @@ const isRenderColdStartError = (error: unknown): boolean => {
 };
 
 /** Acorda o backend no Render (free tier dorme após inatividade). */
-export const pingApiHealth = async (maxAttempts = 15): Promise<boolean> => {
+export const pingApiHealth = async (maxAttempts = 6): Promise<boolean> => {
   wakeApiServer();
-  await sleep(4000);
+  await sleep(2000);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (attempt > 1 && attempt % 3 === 0) {
       wakeApiServer();
     }
     try {
-      const response = await apiClient.get("/health", { timeout: 60000 });
+      const response = await apiClient.get("/health", {
+        timeout: 30000,
+        __skipColdStartRetry: true,
+      } as never);
       const status = response.data?.status;
       if (status === "online" || status === "ok") {
+        console.info(`[api] /health ok (tentativa ${attempt}/${maxAttempts})`);
         return true;
       }
     } catch {
       /* Render ainda subindo — 502 sem CORS é normal durante cold start */
     }
     if (attempt < maxAttempts) {
-      await sleep(Math.min(3000 + attempt * 2500, 12000));
+      await sleep(Math.min(2500 + attempt * 1500, 8000));
     }
   }
+  console.warn(`[api] /health falhou após ${maxAttempts} tentativas`);
   return false;
 };
 
@@ -210,13 +215,16 @@ apiClient.interceptors.response.use(
     }
 
     const retryCount = config.__coldStartRetryCount ?? 0;
-    if (retryCount >= 4) {
+    if (retryCount >= 2) {
       return Promise.reject(error);
     }
 
     config.__coldStartRetryCount = retryCount + 1;
+    console.warn(
+      `[api] cold-start retry ${retryCount + 1}/2 para ${requestUrl}`,
+    );
     wakeApiServer();
-    await sleep(4000 + retryCount * 4000);
+    await sleep(5000 + retryCount * 5000);
     if (retryCount === 0) {
       const { connectBackendWithToast } = await import("./backendConnectionToast");
       await connectBackendWithToast();
@@ -289,24 +297,29 @@ const buildUploadFormData = (file: File): FormData => {
 
 // Upload PDF
 export const uploadPDF = async (file: File) => {
+  console.info(`[api] uploadPDF início (${file.name}, ${(file.size / 1024 / 1024).toFixed(2)} MB)`);
   wakeApiServer();
-  await sleep(2000);
+
+  const { getBackendConnectionStatus } = await import("./backendConnectionToast");
+  const alreadyUp = getBackendConnectionStatus() === "connected";
+  if (!alreadyUp) {
+    const ready = await pingApiHealth(6);
+    if (!ready) {
+      throw new Error(
+        "Servidor da API ainda está iniciando. Aguarde o toast ficar verde e tente novamente.",
+      );
+    }
+  }
 
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 8; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      console.info(`[api] upload tentativa ${attempt}/3`);
       if (attempt > 1) {
         wakeApiServer();
-        const ready = await pingApiHealth(12);
+        const ready = await pingApiHealth(4);
         if (!ready) {
-          await sleep(Math.min(attempt * 5000, 20000));
-        }
-      } else {
-        const ready = await pingApiHealth(8);
-        if (!ready) {
-          throw new Error(
-            "Servidor da API ainda está iniciando. Aguarde ~1 minuto e tente novamente.",
-          );
+          await sleep(Math.min(attempt * 4000, 12000));
         }
       }
 
@@ -315,15 +328,19 @@ export const uploadPDF = async (file: File) => {
         timeout: 180000,
         __skipColdStartRetry: true,
       } as RetryAxiosConfig);
+      console.info(`[api] upload OK → ${response.data?.upload_id}`);
       return response.data;
     } catch (error: unknown) {
       lastError = error;
-      const err = error as { code?: string };
+      const err = error as { code?: string; response?: { status?: number } };
+      console.warn(
+        `[api] upload falhou tentativa ${attempt}: status=${err?.response?.status} code=${err?.code}`,
+      );
       if (err?.code === "ECONNABORTED") {
         throw new Error("Timeout no upload. Verifique conexão/servidor e tente novamente.");
       }
-      if (isRenderColdStartError(error) && attempt < 8) {
-        await sleep(Math.min(attempt * 6000, 30000));
+      if (isRenderColdStartError(error) && attempt < 3) {
+        await sleep(Math.min(attempt * 5000, 15000));
         continue;
       }
       break;
@@ -394,6 +411,7 @@ export const getOrcamentoTableCandidates = async (
 /**
  * Lista tabelas candidatas após upload (curadoria antes da IA).
  * Reenvia o PDF quando disponível — necessário no Render Free (disco efêmero, sem Storage/Blaze).
+ * Sem retry em cascata: 502/OOM no meio do detect piora se reenviar o PDF várias vezes.
  */
 export const detectOrcamentoTables = async (uploadId: string, pdfFile?: File) => {
   const formData = new FormData();
@@ -402,37 +420,41 @@ export const detectOrcamentoTables = async (uploadId: string, pdfFile?: File) =>
     formData.append("file", pdfFile, pdfFile.name);
   }
 
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-        timeout: 300000,
-      });
-      return response.data as OrcamentoTableDetectResponse;
-    } catch (error: unknown) {
-      lastError = error;
-      if (isRenderColdStartError(error) && attempt < 3) {
-        await sleep(attempt * 5000);
-        await pingApiHealthLight();
-        continue;
-      }
-      break;
-    }
-  }
+  console.info(
+    `[api] detect-tables início upload_id=${uploadId} file=${pdfFile?.name ?? "cache"}`,
+  );
+  const started = Date.now();
 
-  const err = lastError as { response?: { data?: { detail?: unknown } } };
-  const detail = err.response?.data?.detail;
-  const msg =
-    typeof detail === "string"
-      ? detail
-      : Array.isArray(detail)
-        ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
-        : parseApiError(
-            lastError,
-            "Erro ao detectar tabelas. O servidor pode ter ficado sem memória ao processar o PDF — tente um arquivo menor ou aguarde e tente novamente.",
-          );
-  throw new Error(msg || "Erro ao detectar tabelas");
+  try {
+    const response = await apiClient.post("/api/orcamentos/detect-tables", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 300000,
+      __skipColdStartRetry: true,
+    } as RetryAxiosConfig);
+    const data = response.data as OrcamentoTableDetectResponse;
+    console.info(
+      `[api] detect-tables OK em ${((Date.now() - started) / 1000).toFixed(1)}s → ${data.tables_found} tabela(s) cached=${Boolean(data.cached)}`,
+    );
+    return data;
+  } catch (error: unknown) {
+    const err = error as { response?: { status?: number; data?: { detail?: unknown } }; code?: string };
+    console.error(
+      `[api] detect-tables falhou em ${((Date.now() - started) / 1000).toFixed(1)}s status=${err?.response?.status} code=${err?.code}`,
+      err?.response?.data?.detail ?? error,
+    );
+
+    const detail = err.response?.data?.detail;
+    const msg =
+      typeof detail === "string"
+        ? detail
+        : Array.isArray(detail)
+          ? detail.map((d: { msg?: string }) => d?.msg).join("; ")
+          : parseApiError(
+              error,
+              "Erro ao detectar tabelas. O servidor pode ter ficado sem memória ao processar o PDF — aguarde o backend voltar e tente novamente (sem spam de retries).",
+            );
+    throw new Error(msg || "Erro ao detectar tabelas");
+  }
 };
 
 export type AnaliticoFullPdfResult = {

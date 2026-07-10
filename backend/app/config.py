@@ -61,17 +61,18 @@ API_VERSION = "2.0.0"
 API_DESCRIPTION = "API para leitura de PDFs e orçamentos de obras"
 
 # Cloud: menos páginas que local, mas o suficiente para orçamentos típicos.
-_default_detect_pages = "35" if (IS_RENDER or IS_VERCEL) else "60"
+_default_detect_pages = "25" if (IS_RENDER or IS_VERCEL) else "60"
 DETECT_TABLES_MAX_PAGES = int(os.getenv("DETECT_TABLES_MAX_PAGES", _default_detect_pages))
-_default_max_candidates = "30" if (IS_RENDER or IS_VERCEL) else "40"
+_default_max_candidates = "25" if (IS_RENDER or IS_VERCEL) else "40"
 DETECT_TABLES_MAX_CANDIDATES = int(
     os.getenv("DETECT_TABLES_MAX_CANDIDATES", _default_max_candidates)
 )
 DETECT_TABLES_THUMB_SCALE = float(os.getenv("DETECT_TABLES_THUMB_SCALE", "1.25"))
-DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "9"))
+DETECT_TABLES_CACHE_VERSION = int(os.getenv("DETECT_TABLES_CACHE_VERSION", "10"))
 
-# Miniaturas só nos candidatos finais (ver table_detection). Em cloud: leves, não skip.
-_default_skip_thumbs = "false"
+# Render Free: miniaturas estouram RAM → 503 → frontend retenta em loop.
+# Preview usa preview_rows (HTML) no frontend quando imagem_base64 é null.
+_default_skip_thumbs = "true" if (IS_RENDER or IS_VERCEL) else "false"
 DETECT_TABLES_SKIP_THUMBNAILS = os.getenv(
     "DETECT_TABLES_SKIP_THUMBNAILS", _default_skip_thumbs
 ).lower() in {"1", "true", "yes", "on"}

@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, Depends
 
@@ -16,6 +17,14 @@ async def process_orcamento_tables(
     user_id: str = Depends(get_current_user_id),
 ):
     """Extrai e analisa tabelas selecionadas com OpenAI (híbrido + parser local)."""
+    t0 = time.perf_counter()
+    logger.info(
+        "[process-tables] INÍCIO upload=%s tables=%s tipos=%s user=%s",
+        payload.upload_id,
+        payload.table_ids,
+        payload.analysis_types,
+        user_id[:12] if user_id else "-",
+    )
     result = await process_selected_tables(
         payload.upload_id,
         user_id,
@@ -23,9 +32,10 @@ async def process_orcamento_tables(
         list(payload.analysis_types),
     )
     logger.info(
-        "process-tables: upload=%s itens=%s tipos=%s",
+        "[process-tables] FIM upload=%s itens=%s engine=%s em %.2fs",
         payload.upload_id,
         result.get("items_found"),
-        payload.analysis_types,
+        result.get("engine"),
+        time.perf_counter() - t0,
     )
     return ProcessTablesResponse(**result)

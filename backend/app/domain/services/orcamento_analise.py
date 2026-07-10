@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 StatusVerificacao = Literal["ok", "divergente", "alerta", "nao_aplicavel", "pendente"]
 StatusGeralLinha = Literal["aprovado", "alerta", "reprovado", "ignorado"]
@@ -391,6 +394,7 @@ def analisar_linhas_orcamento(
     tolerancia_monetaria: float = 0.02,
     tolerancia_percentual: float = 0.5,
 ) -> dict[str, Any]:
+    logger.info("[orcamento_analise] início linhas=%s", len(linhas))
     bdi = bdi_global if bdi_global and bdi_global > 0 else _inferir_bdi_global(linhas)
     bdis_validos = _inferir_bdis_validos_documento(linhas)
     resultados = [
@@ -404,6 +408,15 @@ def analisar_linhas_orcamento(
         for linha in linhas
     ]
     analisadas = [r for r in resultados if r["status_geral"] != "ignorado"]
+    resumo = {
+        "total_linhas": len(resultados),
+        "linhas_analisadas": len(analisadas),
+        "linhas_ignoradas": len(resultados) - len(analisadas),
+        "aprovadas": sum(1 for r in analisadas if r["status_geral"] == "aprovado"),
+        "com_alerta": sum(1 for r in analisadas if r["status_geral"] == "alerta"),
+        "reprovadas": sum(1 for r in analisadas if r["status_geral"] == "reprovado"),
+    }
+    logger.info("[orcamento_analise] fim resumo=%s bdi_global=%.2f", resumo, bdi)
     return {
         "versao_modelo": "1.1",
         "contexto": {
@@ -413,12 +426,5 @@ def analisar_linhas_orcamento(
             "tolerancia_percentual": tolerancia_percentual,
         },
         "linhas": resultados,
-        "resumo": {
-            "total_linhas": len(resultados),
-            "linhas_analisadas": len(analisadas),
-            "linhas_ignoradas": len(resultados) - len(analisadas),
-            "aprovadas": sum(1 for r in analisadas if r["status_geral"] == "aprovado"),
-            "com_alerta": sum(1 for r in analisadas if r["status_geral"] == "alerta"),
-            "reprovadas": sum(1 for r in analisadas if r["status_geral"] == "reprovado"),
-        },
+        "resumo": resumo,
     }

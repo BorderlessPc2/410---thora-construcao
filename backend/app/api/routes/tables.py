@@ -1,10 +1,15 @@
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.deps import get_current_user_id
-from app.config import MAX_FILE_SIZE
+from app.config import (
+    DETECT_TABLES_MAX_PAGES,
+    DETECT_TABLES_SKIP_THUMBNAILS,
+    MAX_FILE_SIZE,
+)
 from app.domain.schemas.table import TableDetectResponse
 from app.domain.services.table_detection import (
     detect_table_options,
@@ -33,7 +38,16 @@ async def detect_orcamento_tables(
     Aceita o PDF de novo no Form (campo `file`) para ambientes com disco efêmero
     (Render Free), sem depender de Firebase Storage / plano Blaze.
     """
+    t0 = time.perf_counter()
     upload_id = UploadStore.validate_upload_id(upload_id)
+    logger.info(
+        "[detect-tables] INÍCIO upload_id=%s user=%s file=%s skip_thumbs=%s max_pages=%s",
+        upload_id,
+        user_id[:12] if user_id else "-",
+        file.filename if file else None,
+        DETECT_TABLES_SKIP_THUMBNAILS,
+        DETECT_TABLES_MAX_PAGES,
+    )
 
     if file is not None:
         if file.content_type and file.content_type != "application/pdf":
@@ -56,18 +70,31 @@ async def detect_orcamento_tables(
             content_type=file.content_type or "application/pdf",
         )
         logger.info(
-            "detect-tables: PDF reenviado e salvo (%s, %.2f MB)",
+            "[detect-tables] PDF reenviado e salvo (%s, %.2f MB) em %.2fs",
             upload_id,
             len(contents) / 1024 / 1024,
+            time.perf_counter() - t0,
         )
     else:
+        logger.info("[detect-tables] sem file no form — usando disco/cache local")
         _upload_store.assert_access(upload_id, user_id)
 
     file_path = _upload_store.ensure_pdf(upload_id, user_id=user_id)
+    logger.info(
+        "[detect-tables] PDF pronto path=%s size=%.2f MB (%.2fs)",
+        file_path.name,
+        file_path.stat().st_size / 1024 / 1024,
+        time.perf_counter() - t0,
+    )
 
     if _table_cache.is_valid(upload_id):
         options, _ = _table_cache.get(upload_id)
         public = public_options_from_raw(options)
+        logger.info(
+            "[detect-tables] CACHE HIT → %s tabela(s) em %.2fs",
+            len(public),
+            time.perf_counter() - t0,
+        )
         return TableDetectResponse(
             upload_id=upload_id,
             tables_found=len(public),
@@ -77,14 +104,35 @@ async def detect_orcamento_tables(
             recommended_table_ids=recommended_table_ids(options),
         )
 
+    logger.info("[detect-tables] extraindo tabelas (pdfplumber)…")
+    t_detect = time.perf_counter()
     try:
         options, fallback_used = await asyncio.to_thread(detect_table_options, file_path)
     except Exception as exc:
-        logger.error("detect-tables falhou: %s", exc)
+        logger.exception(
+            "[detect-tables] FALHOU após %.2fs: %s",
+            time.perf_counter() - t0,
+            exc,
+        )
         raise HTTPException(status_code=500, detail=f"Erro ao analisar PDF: {exc}") from exc
+
+    logger.info(
+        "[detect-tables] extração OK em %.2fs → %s candidato(s) camelot_fallback=%s",
+        time.perf_counter() - t_detect,
+        len(options),
+        fallback_used,
+    )
 
     _table_cache.save(upload_id, options)
     public = public_options_from_raw(options)
+    with_img = sum(1 for o in public if o.get("imagem_base64"))
+    logger.info(
+        "[detect-tables] FIM upload_id=%s tables=%s com_imagem=%s total=%.2fs",
+        upload_id,
+        len(public),
+        with_img,
+        time.perf_counter() - t0,
+    )
 
     return TableDetectResponse(
         upload_id=upload_id,
@@ -106,6 +154,11 @@ async def get_table_candidates(
 
     options, _ = _table_cache.get(upload_id)
     public = public_options_from_raw(options)
+    logger.info(
+        "[table-candidates] upload_id=%s tables=%s",
+        upload_id,
+        len(public),
+    )
     return TableDetectResponse(
         upload_id=upload_id,
         tables_found=len(public),

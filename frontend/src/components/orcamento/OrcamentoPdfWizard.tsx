@@ -512,9 +512,11 @@ export function OrcamentoPdfWizard({
     if (!file) return;
     setErrorMessage("");
 
+    const { connectBackendWithToast, pauseBackendStatusMonitor, resumeBackendStatusMonitor } =
+      await import("../../services/backendConnectionToast");
+
     try {
       setPhase("uploading");
-      const { connectBackendWithToast } = await import("../../services/backendConnectionToast");
       const ready = await connectBackendWithToast();
       if (!ready) {
         throw new Error(
@@ -522,13 +524,18 @@ export function OrcamentoPdfWizard({
         );
       }
 
+      pauseBackendStatusMonitor("upload+detect");
+      console.info("[wizard] etapa upload…");
       const uploadResponse = await uploadPDF(file);
       const currentUploadId = uploadResponse.upload_id as string;
       setUploadId(currentUploadId);
+      console.info(`[wizard] upload ok → ${currentUploadId}`);
 
       setPhase("detecting");
+      console.info("[wizard] etapa detect-tables…");
       const detectResponse = await detectOrcamentoTables(currentUploadId, file);
       const mappedOptions = mapTableCandidates(detectResponse.options || []);
+      console.info(`[wizard] detect ok → ${mappedOptions.length} tabela(s)`);
 
       setTableOptions(mappedOptions);
       setSelectedTableIds([]);
@@ -549,9 +556,12 @@ export function OrcamentoPdfWizard({
       });
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar arquivo";
+      console.error("[wizard] falha no fluxo:", error);
       setErrorMessage(msg);
       setPhase("pick_file");
       toast.error("Falha no fluxo", { description: msg });
+    } finally {
+      resumeBackendStatusMonitor();
     }
   };
 
@@ -586,10 +596,18 @@ export function OrcamentoPdfWizard({
       return;
     }
 
+    const { pauseBackendStatusMonitor, resumeBackendStatusMonitor } = await import(
+      "../../services/backendConnectionToast"
+    );
+
     setPhase("processing_ai");
     setProcessingDetail("IA analisando tabelas selecionadas…");
     setProgressPercent(10);
     setErrorMessage("");
+    pauseBackendStatusMonitor("process-tables");
+    console.info(
+      `[wizard] process-tables upload=${uploadId} tables=${selectedTableIds.join(",")} tipos=${selectedAnalysisTypes.join(",")}`,
+    );
 
     try {
       const selectedTablePreviews = selectedTableIds
@@ -608,6 +626,7 @@ export function OrcamentoPdfWizard({
         selectedTableIds,
         selectedAnalysisTypes,
       );
+      console.info(`[wizard] process-tables OK itens=${result.items_found ?? result.items?.length}`);
 
       setProgressPercent(100);
       setProcessingDetail("Análise concluída — abrindo validação…");
@@ -643,9 +662,12 @@ export function OrcamentoPdfWizard({
       );
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : "Erro ao processar tabelas";
+      console.error("[wizard] process-tables falhou:", error);
       setErrorMessage(msg);
       setPhase("selecting_analysis");
       toast.error("Falha na análise", { description: msg });
+    } finally {
+      resumeBackendStatusMonitor();
     }
   };
 
