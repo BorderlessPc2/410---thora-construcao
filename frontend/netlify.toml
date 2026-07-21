@@ -8,7 +8,7 @@
   status = 200
 
 [context.production]
-  environment = { VITE_API_URL = "https://four10-thora-construcao-y8ca.onrender.com" }
+  environment = { VITE_API_URL = "https://thora-api-333573409559.us-central1.run.app" }
 
 [context.deploy-preview]
-  environment = { VITE_API_URL = "https://four10-thora-construcao-y8ca.onrender.com" }
+  environment = { VITE_API_URL = "https://thora-api-333573409559.us-central1.run.app" }

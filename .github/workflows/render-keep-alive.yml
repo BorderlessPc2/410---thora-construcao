@@ -1,16 +1,15 @@
-# Ping periódico no Render para evitar sleep (free tier ~15 min sem tráfego).
-# Secret opcional RENDER_HEALTH_URL sobrescreve a URL padrão abaixo.
+# Ping periódico no Cloud Run (min-instances=0) para reduzir cold start.
+# Secret opcional CLOUD_RUN_HEALTH_URL sobrescreve a URL padrão.
 
-name: Render keep-alive
+name: API keep-alive
 
 on:
   schedule:
-    # A cada 5 min (margem segura — cron do GitHub pode atrasar alguns minutos)
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
 env:
-  DEFAULT_RENDER_HEALTH_URL: https://four10-thora-construcao-262l.onrender.com/health
+  DEFAULT_HEALTH_URL: https://thora-api-333573409559.us-central1.run.app/health
 
 jobs:
   ping:
@@ -19,9 +18,9 @@ jobs:
     steps:
       - name: Ping /health (com retry)
         env:
-          RENDER_HEALTH_URL: ${{ secrets.RENDER_HEALTH_URL }}
+          CLOUD_RUN_HEALTH_URL: ${{ secrets.CLOUD_RUN_HEALTH_URL }}
         run: |
-          URL="${RENDER_HEALTH_URL:-$DEFAULT_RENDER_HEALTH_URL}"
+          URL="${CLOUD_RUN_HEALTH_URL:-$DEFAULT_HEALTH_URL}"
           echo "Ping → $URL"
           for attempt in 1 2 3; do
             if curl -fsS --max-time 90 "$URL"; then
@@ -31,5 +30,5 @@ jobs:
             echo "Falha na tentativa $attempt — aguardando 15s..."
             sleep 15
           done
-          echo "Render não respondeu após 3 tentativas (pode estar acordando)."
+          echo "API não respondeu após 3 tentativas (pode estar acordando)."
           exit 1

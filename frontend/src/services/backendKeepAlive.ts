@@ -9,12 +9,12 @@ function parseIntervalMs(): number {
   return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : DEFAULT_INTERVAL_MS;
 }
 
-/** Ativo quando a API aponta para Render (ou forçado via env). */
+/** Ativo para backends que dormem (Render Free / Cloud Run min=0), ou forçado via env. */
 export function shouldEnableBackendKeepAlive(apiBase = getApiBaseUrl()): boolean {
   const flag = String(import.meta.env.VITE_KEEP_ALIVE_ENABLED ?? "").toLowerCase();
   if (flag === "false" || flag === "0") return false;
   if (flag === "true" || flag === "1") return true;
-  return /\.onrender\.com/i.test(apiBase);
+  return /\.onrender\.com/i.test(apiBase) || /\.run\.app/i.test(apiBase);
 }
 
 /**
@@ -42,7 +42,7 @@ export function startBackendKeepAlive(options?: {
 
   if (import.meta.env.DEV) {
     console.info(
-      `[keep-alive] Render wake a cada ${Math.round(intervalMs / 1000)}s → ${apiBase}/health`,
+      `[keep-alive] wake a cada ${Math.round(intervalMs / 1000)}s → ${apiBase}/health`,
     );
   }
 
